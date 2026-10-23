@@ -1,0 +1,36 @@
+[Unit]
+Description=Server AI Health and Security Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server-agent
+Group=server-agent
+SupplementaryGroups=adm systemd-journal
+WorkingDirectory=/opt/server-ai-agent
+EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env
+ExecStart=/opt/server-ai-agent/venv/bin/python -m server_agent
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+UMask=0077
+
+# Hardening. The service is read-only except for its state/log directories.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectHostname=true
+ProtectClock=true
+ReadWritePaths=/var/lib/server-ai-agent /var/log/server-ai-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

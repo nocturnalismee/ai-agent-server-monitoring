@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "server-ai-agent"
+version = "0.1.0"
+description = "Read-only Linux health and security monitoring agent"
+requires-python = ">=3.9"
+dependencies = [
+    "psutil==7.0.0",
+    "python-dotenv==1.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
