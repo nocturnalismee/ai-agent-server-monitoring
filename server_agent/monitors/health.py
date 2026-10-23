@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -16,6 +15,9 @@ class HealthMonitor:
         self.cfg = config
         self.state = state
         self.logger = logger
+        # Prime psutil's non-blocking CPU counter. Subsequent calls are based
+        # on elapsed time and do not pause the monitoring loop for one second.
+        psutil.cpu_percent(interval=None)
 
     @staticmethod
     def _severity(value: float, warning: float, critical: float):
@@ -53,30 +55,20 @@ class HealthMonitor:
         return None
 
     def _service_state(self, service: str) -> Tuple[str, str]:
-        if not shutil.which("systemctl"):
-            return "unknown", "systemctl not found"
         try:
-            loaded = subprocess.run(
-                ["systemctl", "show", service, "--property=LoadState", "--value"],
-                capture_output=True, text=True, timeout=5, check=False
-            )
-            load_state = (loaded.stdout or "").strip()
-            if load_state in {"not-found", ""}:
-                return "not-found", ""
-
             p = subprocess.run(
-                ["systemctl", "is-active", service],
-                capture_output=True, text=True, timeout=5, check=False
+                ["systemctl", "is-active", "--", service],
+                capture_output=True, text=True, timeout=3, check=False
             )
             state = (p.stdout or p.stderr).strip()
-            return ("active" if p.returncode == 0 and state == "active" else state or "inactive", "")
-        except (subprocess.TimeoutExpired, OSError) as exc:
+            return ("active" if p.returncode == 0 and state == "active" else state or "unknown", "")
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
             return "unknown", str(exc)
 
     def collect(self) -> List[Incident]:
         incidents: List[Incident] = []
 
-        cpu = psutil.cpu_percent(interval=1)
+        cpu = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory().percent
 
         for incident in (

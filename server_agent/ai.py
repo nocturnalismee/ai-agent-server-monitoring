@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import ssl
-from typing import Any, Dict
+import threading
+import time
+from typing import Any, Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,6 +27,23 @@ class AIAnalyzer:
         self.logger = logger
         self.enabled = bool(config.gemini_enabled and config.gemini_api_key)
         self.ssl_context = ssl.create_default_context()
+        self._rate_limit_lock = threading.Lock()
+        self._request_history: List[float] = []
+
+    def _is_rate_limited(self) -> bool:
+        """Check sliding window (60s) rate limit. Return True if call should be blocked."""
+        limit = getattr(self.cfg, "gemini_rate_limit_per_minute", 10)
+        if limit <= 0:
+            return False
+        now = time.monotonic()
+        with self._rate_limit_lock:
+            self._request_history = [
+                ts for ts in self._request_history if now - ts < 60.0
+            ]
+            if len(self._request_history) >= limit:
+                return True
+            self._request_history.append(now)
+            return False
 
     @staticmethod
     def _extract_text(response: Dict[str, Any]) -> str:
@@ -42,6 +61,14 @@ class AIAnalyzer:
 
     def analyze(self, incident) -> str:
         if not self.enabled:
+            return ""
+
+        if self._is_rate_limited():
+            self.logger.warning(
+                "Gemini rate limit exceeded (%d requests/min); skipping AI enrichment for %s",
+                getattr(self.cfg, "gemini_rate_limit_per_minute", 10),
+                incident.fingerprint,
+            )
             return ""
 
         # Defense in depth: the Agent already redacts outbound telemetry.

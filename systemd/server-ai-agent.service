@@ -15,6 +15,10 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20
 UMask=0077
+# Monitoring must yield to hosted workloads when CPU or storage is contended.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 # Hardening. The service is read-only except for its state/log directories.
 NoNewPrivileges=true

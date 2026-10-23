@@ -5,6 +5,6 @@
     delaycompress
     missingok
     notifempty
-    copytruncate
+    create 0600 server-agent server-agent
     su server-agent server-agent
 }

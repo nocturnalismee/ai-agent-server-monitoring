@@ -34,24 +34,83 @@ is_debian_family() {
 detect_profile() {
   if [[ -x /usr/local/cpanel/cpanel || -d /usr/local/cpanel ]]; then
     PLATFORM_PROFILE=cpanel
-    APACHE_LOG=/etc/apache2/logs/error_log
+    WEB_ERROR_LOGS=/etc/apache2/logs/error_log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    DEFAULT_SERVICES=httpd,sshd
+    SERVICE_CANDIDATES=httpd,sshd
+  elif [[ -d /usr/local/psa || -d /etc/psa ]]; then
+    PLATFORM_PROFILE=plesk
+    WEB_ERROR_LOGS=/var/log/sw-cp-server/error_log,/var/log/plesk/panel.log,/var/log/nginx/error.log,/var/log/httpd/error_log,/var/log/apache2/error.log
+    AUTH_LOG_PRIMARY=/var/log/secure
+    AUTH_LOG_SECONDARY=/var/log/auth.log
+    SERVICE_CANDIDATES=sw-cp-server,nginx,httpd,apache2,sshd,ssh
+  elif [[ -d /usr/local/CyberCP ]]; then
+    PLATFORM_PROFILE=cyberpanel
+    # Keep panel defaults outside /home: ProtectHome=true deliberately prevents
+    # access to tenant home directories, including CyberPanel's optional copy.
+    WEB_ERROR_LOGS=/usr/local/lsws/logs/error.log
+    AUTH_LOG_PRIMARY=/var/log/secure
+    AUTH_LOG_SECONDARY=/var/log/auth.log
+    SERVICE_CANDIDATES=lsws,lscpd,sshd,ssh
+  elif [[ -d /usr/local/directadmin ]]; then
+    PLATFORM_PROFILE=directadmin
+    WEB_ERROR_LOGS=/var/log/directadmin/error.log,/var/log/httpd/error_log,/var/log/nginx/error.log
+    AUTH_LOG_PRIMARY=/var/log/secure
+    AUTH_LOG_SECONDARY=/var/log/auth.log
+    SERVICE_CANDIDATES=directadmin,httpd,nginx,sshd,ssh
+  elif [[ -d /www/server/panel ]]; then
+    PLATFORM_PROFILE=aapanel
+    WEB_ERROR_LOGS=/www/server/nginx/logs/error.log,/www/wwwlogs/error_log
+    AUTH_LOG_PRIMARY=/var/log/secure
+    AUTH_LOG_SECONDARY=/var/log/auth.log
+    SERVICE_CANDIDATES=nginx,httpd,apache2,sshd,ssh
   elif is_rhel_family; then
     PLATFORM_PROFILE=rhel
-    APACHE_LOG=/var/log/httpd/error_log
+    WEB_ERROR_LOGS=/var/log/httpd/error_log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    DEFAULT_SERVICES=httpd,sshd
+    SERVICE_CANDIDATES=httpd,sshd
   elif is_debian_family; then
     PLATFORM_PROFILE=debian
-    APACHE_LOG=/var/log/apache2/error.log
+    WEB_ERROR_LOGS=/var/log/apache2/error.log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/auth.log
     AUTH_LOG_SECONDARY=/var/log/secure
-    DEFAULT_SERVICES=apache2,ssh
+    SERVICE_CANDIDATES=apache2,ssh
   else
     die "Unsupported operating system: ID=$OS_ID ID_LIKE=$OS_LIKE"
+  fi
+
+  # Panels run on both Debian and RHEL-family distributions; auth and kernel logging
+  # are chosen from the OS rather than the panel brand.
+  if is_debian_family; then
+    AUTH_LOG_PRIMARY=/var/log/auth.log
+    AUTH_LOG_SECONDARY=/var/log/secure
+    KERNEL_LOG_PRIMARY=/var/log/kern.log
+    KERNEL_LOG_SECONDARY=/var/log/syslog
+  else
+    AUTH_LOG_PRIMARY=/var/log/secure
+    AUTH_LOG_SECONDARY=/var/log/auth.log
+    KERNEL_LOG_PRIMARY=/var/log/messages
+    KERNEL_LOG_SECONDARY=/var/log/dmesg
+  fi
+}
+
+resolve_default_services() {
+  local service
+  local -a candidates=()
+  local -a active_services=()
+  IFS=',' read -r -a candidates <<< "$SERVICE_CANDIDATES"
+  if command -v systemctl >/dev/null 2>&1; then
+    for service in "${candidates[@]}"; do
+      if systemctl is-active --quiet "$service" 2>/dev/null; then
+        active_services+=("$service")
+      fi
+    done
+  fi
+  if [[ ${#active_services[@]} -gt 0 ]]; then
+    DEFAULT_SERVICES=$(IFS=,; echo "${active_services[*]}")
+  else
+    DEFAULT_SERVICES=$SERVICE_CANDIDATES
   fi
 }
 
@@ -60,7 +119,13 @@ install_python() {
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip ca-certificates acl
   elif is_rhel_family; then
-    dnf install -y python3 python3-pip ca-certificates acl
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y python3 python3-pip ca-certificates acl
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y python3 python3-pip ca-certificates acl
+    else
+      die "No supported package manager for this RHEL-family system."
+    fi
   else
     die "No supported package manager for this operating system."
   fi
@@ -68,7 +133,7 @@ install_python() {
 
 select_python() {
   local candidate version
-  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 /opt/alt/python39/bin/python3 /opt/alt/python310/bin/python3 /opt/alt/python311/bin/python3 /opt/alt/python39/bin/python3.9 /opt/alt/python310/bin/python3.10 /opt/alt/python311/bin/python3.11; do
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 /opt/alt/python39/bin/python3 /opt/alt/python310/bin/python3 /opt/alt/python311/bin/python3 /opt/alt/python312/bin/python3 /opt/alt/python313/bin/python3 /opt/alt/python39/bin/python3.9 /opt/alt/python310/bin/python3.10 /opt/alt/python311/bin/python3.11 /opt/alt/python312/bin/python3.12 /opt/alt/python313/bin/python3.13; do
     command -v "$candidate" >/dev/null 2>&1 || continue
     version=$($candidate -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null || true)
     if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
@@ -77,7 +142,7 @@ select_python() {
     fi
     note "Ignoring $candidate (Python $version); Python 3.9+ is required."
   done
-  die "Python 3.9+ was not found. On CloudLinux 7, install an alt-Python 3.9+ package first."
+  return 1
 }
 
 set_env_value() {
@@ -92,10 +157,11 @@ set_env_value() {
 write_platform_defaults() {
   local env_file=$1
   set_env_value SERVICES "$DEFAULT_SERVICES" "$env_file"
-  set_env_value APACHE_ERROR_LOG "$APACHE_LOG" "$env_file"
-  set_env_value APACHE_RHEL_ERROR_LOG "$APACHE_LOG" "$env_file"
+  set_env_value WEB_ERROR_LOGS "$WEB_ERROR_LOGS" "$env_file"
   set_env_value AUTH_LOG "$AUTH_LOG_PRIMARY" "$env_file"
   set_env_value AUTH_LOG_RHEL "$AUTH_LOG_SECONDARY" "$env_file"
+  set_env_value KERNEL_LOG "$KERNEL_LOG_PRIMARY" "$env_file"
+  set_env_value KERNEL_LOG_RHEL "$KERNEL_LOG_SECONDARY" "$env_file"
   set_env_value PLATFORM_PROFILE "$PLATFORM_PROFILE" "$env_file"
 }
 
@@ -121,7 +187,10 @@ install_unit() {
 
 check_log_access() {
   local path
-  local -a paths=("$AUTH_LOG_PRIMARY" "$APACHE_LOG" /var/log/nginx/error.log)
+  local -a paths=("$AUTH_LOG_PRIMARY" "$AUTH_LOG_SECONDARY" "$KERNEL_LOG_PRIMARY" "$KERNEL_LOG_SECONDARY")
+  local -a web_paths=()
+  IFS=',' read -r -a web_paths <<< "$WEB_ERROR_LOGS"
+  paths+=("${web_paths[@]}")
   note "Read-access check (missing logs are normal when the service is not installed):"
   for path in "${paths[@]}"; do
     if [[ ! -e $path ]]; then
@@ -137,8 +206,9 @@ check_log_access() {
 print_profile() {
   load_os_release
   detect_profile
-  printf 'profile=%s\nos_id=%s\nos_like=%s\napache_log=%s\nauth_log=%s\nservices=%s\n' \
-    "$PLATFORM_PROFILE" "$OS_ID" "$OS_LIKE" "$APACHE_LOG" "$AUTH_LOG_PRIMARY" "$DEFAULT_SERVICES"
+  resolve_default_services
+  printf 'profile=%s\nos_id=%s\nos_like=%s\nweb_error_logs=%s\nauth_log=%s\nkernel_log=%s\nservices=%s\n' \
+    "$PLATFORM_PROFILE" "$OS_ID" "$OS_LIKE" "$WEB_ERROR_LOGS" "$AUTH_LOG_PRIMARY" "$KERNEL_LOG_PRIMARY" "$DEFAULT_SERVICES"
 }
 
 main() {
@@ -156,9 +226,13 @@ main() {
 
   load_os_release
   detect_profile
+  resolve_default_services
   note "Detected platform profile: $PLATFORM_PROFILE (ID=$OS_ID)"
-  install_python
-  select_python
+  if ! select_python; then
+    note "Python 3.9+ was not found; installing the OS Python packages."
+    install_python
+    select_python || die "Python 3.9+ was not found. On CloudLinux 7, install an Alt-Python 3.9+ package first."
+  fi
   note "Using $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
   if ! getent group "$SERVICE_USER" >/dev/null 2>&1; then

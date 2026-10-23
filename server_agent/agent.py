@@ -11,6 +11,7 @@ from .emailer import EmailNotifier
 from .filetail import FileTailer
 from .logging_setup import setup_logging
 from .monitors.health import HealthMonitor
+from .monitors.kernel import KernelMonitor
 from .monitors.ssh import SSHMonitor
 from .monitors.web import WebLogMonitor
 from .state import StateStore
@@ -23,11 +24,16 @@ class Agent:
         cfg.validate()
         self.cfg = cfg
         self.log = setup_logging(cfg.log_file, cfg.log_level)
-        self.state = StateStore(cfg.state_dir)
+        self.state = StateStore(
+            cfg.state_dir,
+            cfg.ssh_failure_tracked_ips_max,
+            cfg.ssh_failed_threshold,
+        )
         self.tailer = FileTailer(self.state, self.log)
         self.health = HealthMonitor(cfg, self.state, self.log)
         self.web = WebLogMonitor(cfg, self.tailer, self.log)
         self.ssh = SSHMonitor(cfg, self.state, self.tailer, self.log)
+        self.kernel = KernelMonitor(cfg, self.state, self.tailer, self.log)
         self.ai = AIAnalyzer(cfg, self.log)
         self.notifier = (
             EmailNotifier(cfg, self.log)
@@ -57,7 +63,9 @@ class Agent:
 
         # A failed delivery must not suppress the next alert.
         if self.notifier.send(external_incident):
-            self.state.mark_alert_sent(incident.fingerprint)
+            self.state.mark_alert_sent(
+                incident.fingerprint, self.cfg.alert_cooldown_seconds
+            )
 
     def run_once(self):
         for incident in self.health.collect():
@@ -65,6 +73,8 @@ class Agent:
         for incident in self.web.collect():
             self.dispatch(incident)
         for incident in self.ssh.collect():
+            self.dispatch(incident)
+        for incident in self.kernel.collect():
             self.dispatch(incident)
 
     def run(self):
@@ -86,6 +96,8 @@ class Agent:
                     for incident in self.web.collect():
                         self.dispatch(incident)
                     for incident in self.ssh.collect():
+                        self.dispatch(incident)
+                    for incident in self.kernel.collect():
                         self.dispatch(incident)
                     last_logs = now
             except Exception:

@@ -1,5 +1,5 @@
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import WatchedFileHandler
 from pathlib import Path
 
 
@@ -18,9 +18,8 @@ def setup_logging(log_file: Path, level: str = "INFO") -> logging.Logger:
     stream.setFormatter(fmt)
     logger.addHandler(stream)
 
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=5
-    )
+    # logrotate owns retention/compression; this handler notices its rename.
+    file_handler = WatchedFileHandler(log_file)
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)
 

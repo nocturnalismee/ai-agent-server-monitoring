@@ -49,11 +49,19 @@ class SSHMonitor:
                 paths.append(p)
         return paths
 
+    def _sample(self, line: str) -> str:
+        line = line.rstrip()
+        if len(line) <= self.cfg.max_log_sample_chars:
+            return line
+        return line[: self.cfg.max_log_sample_chars - 14] + " [truncated]"
+
     def collect(self):
         incidents = []
         for path in self._auth_paths():
             lines = self.tailer.read_new_lines(
-                path, max_lines=self.cfg.max_log_lines_per_cycle
+                path,
+                max_lines=self.cfg.max_log_lines_per_cycle,
+                max_line_chars=self.cfg.max_log_line_chars,
             )
             for line in lines:
                 success = SUCCESS_RE.search(line)
@@ -73,7 +81,7 @@ class SSHMonitor:
                             fingerprint=f"ssh:success:{user}:{ip}",
                             details={
                                 "user": user, "source_ip": ip, "method": method,
-                                "trusted_network": trusted, "raw_log": line.rstrip()
+                                "trusted_network": trusted, "raw_log": self._sample(line)
                             },
                         ))
                     self.state.clear_ssh_failures(ip)
@@ -99,7 +107,7 @@ class SSHMonitor:
                                 "attempts_in_window": count,
                                 "last_user": user,
                                 "window_seconds": self.cfg.ssh_failed_window_seconds,
-                                "raw_log": line.rstrip(),
+                                "raw_log": self._sample(line),
                             },
                         ))
         return incidents

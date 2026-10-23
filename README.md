@@ -1,174 +1,225 @@
-# Server AI Agent — Phase 1
+# AI Agent Server Monitoring
 
-A read-only Linux monitoring/security agent for Ubuntu/Debian, AlmaLinux/RHEL,
-and CloudLinux servers, including CloudLinux hosts that run cPanel/EA4.
+A read-only Linux health and security monitoring agent for Ubuntu/Debian,
+AlmaLinux/RHEL, and CloudLinux, with panel-aware defaults for cPanel/EA4,
+Plesk, aaPanel, CyberPanel, and DirectAdmin.
+It monitors host health and selected logs, then sends alerts through **one**
+chosen channel: SMTP email or Telegram. Optional Gemini enrichment uses the
+official HTTPS REST API through Python's standard library; no `google-genai`
+SDK is installed.
 
-## Monitors
+## What it does
 
-- CPU, RAM, 1-minute load normalized by CPU count
-- Disk usage
-- systemd services
-- Nginx error log
-- Apache error log
-- Successful SSH logins
-- Root SSH logins
-- Failed SSH-login bursts / simple brute-force detection
-- Alert recovery events
-- One selected alert channel: SMTP email (including Amazon SES) or Telegram
-- Optional Gemini incident analysis
-- Persistent file cursors, deduplication and cooldowns
-- systemd daemon + service hardening
-- local rotating application log + logrotate
-- Python 3.9+ support; Gemini uses HTTPS REST with Python's standard library
+- Monitors CPU, memory, disk, and 1-minute load per CPU.
+- Checks selected systemd services.
+- Reads new Nginx and Apache error-log entries.
+- Detects SSH logins, root logins, and failed-login bursts.
+- Detects Out-Of-Memory (OOM) killer process terminations and kernel crashes/panics.
+- Enriches high-severity alerts with Gemini AI triage and built-in sliding-window rate limiting.
+- Sends recovery alerts after a monitored health/service condition returns to normal.
+- Limits log processing per cycle to avoid unbounded memory use during log spikes.
+- Stores cursors, alert cooldowns, and SSH counters locally and atomically.
+- Runs as an unprivileged `server-agent` system account.
 
-The agent performs **no remediation**. It does not block IP addresses, restart services, kill processes, change firewall rules, or modify system configuration.
+## What it does not do
 
-For predictable resource use, each log file is consumed in bounded batches
-(`MAX_LOG_LINES_PER_CYCLE=500` by default). Remaining log entries are processed
-in the next polling cycle instead of being loaded into memory at once.
+The agent does not block IPs, restart services, alter firewall rules, execute
+AI-provided commands, or modify application/server configuration. Its only
+writes are its own application, state, log, systemd, and logrotate files during
+installation or upgrade.
 
-## 1. Copy project to the server
+## Before installation
+
+Run the installer only on a server you administer. It installs OS packages,
+creates a system account, writes a systemd unit, and enables the service. It
+requires:
+
+- A supported OS with `systemd`: Ubuntu/Debian, AlmaLinux/RHEL, or CloudLinux.
+- Internet access to GitHub, OS package repositories, and—only if enabled—the
+  configured SMTP, Telegram, and Gemini endpoints.
+- Python 3.9 or newer. On older CloudLinux systems, install an appropriate
+  Alt-Python first; the installer checks common `/opt/alt/python*/bin/python3`
+  locations.
+- `git` installed on the server to use the GitHub deployment path below.
+
+Never put real tokens, passwords, or API keys into Git. The project template
+contains empty credential fields only.
+
+## 1. Clone from GitHub
+
+Connect to the target server with your normal administrative account, then
+clone the reviewed branch into a temporary directory:
 
 ```bash
-scp -r server-ai-agent user@server:/tmp/
-ssh user@server
-cd /tmp/server-ai-agent
+git clone --depth 1 --branch main \
+  https://github.com/nocturnalismee/ai-agent-server-monitoring.git \
+  /tmp/ai-agent-server-monitoring
+cd /tmp/ai-agent-server-monitoring
 ```
 
-## 2. Install
+Confirm that the checkout is clean and inspect the revision before granting the
+installer root access:
 
 ```bash
-chmod +x install.sh uninstall.sh
-sudo ./install.sh
-```
-
-Before installing, print the profile the installer will select:
-
-```bash
+git status --short
+git log -1 --oneline
+bash -n install.sh
+bash -n uninstall.sh
 ./install.sh --print-platform
 ```
 
-The installer selects safe defaults only when it creates a new environment
-file. Re-running it preserves `/etc/server-ai-agent/server-ai-agent.env` and
-does not overwrite operator settings.
+`git status --short` should produce no output. The `--print-platform` command
+does not change the server; it shows the log paths and systemd service names
+the installer will select.
 
-The installer creates:
+For a repeatable production rollout, replace `main` with a reviewed release
+tag or commit SHA once releases are published. The installer copies the
+application into `/opt/server-ai-agent`; the temporary clone may be removed
+after installation succeeds.
 
-```text
-/opt/server-ai-agent
-/etc/server-ai-agent/server-ai-agent.env
-/var/lib/server-ai-agent
-/var/log/server-ai-agent
-/etc/systemd/system/server-ai-agent.service
-/etc/logrotate.d/server-ai-agent
+## 2. Install
+
+From the cloned project directory:
+
+```bash
+sudo ./install.sh
 ```
 
-It also creates an unprivileged `server-agent` system user and adds it to log-reading groups when available.
+The installer:
+
+- installs Python, venv/pip, CA certificates, and ACL tooling through the OS package manager;
+- creates the non-login `server-agent` account and available read-only log groups;
+- installs the application at `/opt/server-ai-agent`;
+- creates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600` only if it does not already exist;
+- installs and enables `server-ai-agent.service` and logrotate;
+- reports whether the service account can read discovered SSH, Apache, and Nginx log files.
+
+It does not start the service automatically. Configure and validate it first.
 
 ### Platform defaults
 
-| Platform | Apache error log | SSH/auth log | Default service checks |
-| --- | --- | --- | --- |
-| Ubuntu/Debian | `/var/log/apache2/error.log` | `/var/log/auth.log` | `apache2`, `ssh` |
-| AlmaLinux/RHEL | `/var/log/httpd/error_log` | `/var/log/secure` | `httpd`, `sshd` |
-| CloudLinux with cPanel/EA4 | `/etc/apache2/logs/error_log` | `/var/log/secure` | `httpd`, `sshd` |
+| Platform | Explicit web/panel error logs | Default service checks |
+| --- | --- | --- |
+| Ubuntu/Debian | Apache and Nginx global error logs | Active `apache2`/`ssh` services |
+| AlmaLinux/RHEL | Apache and Nginx global error logs | Active `httpd`/`sshd` services |
+| cPanel/EA4 | `/etc/apache2/logs/error_log`, optional Nginx log | Active `httpd`, `sshd` |
+| Plesk | `sw-cp-server`, Plesk panel, Nginx, Apache global logs | Active Plesk/web/SSH services |
+| aaPanel | aaPanel Nginx and Apache global logs | Active web/SSH services |
+| CyberPanel | LiteSpeed global error log | Active `lsws`, `lscpd`, SSH services |
+| DirectAdmin | DirectAdmin, Apache, and Nginx global logs | Active DirectAdmin/web/SSH services |
 
-The installer detects cPanel from `/usr/local/cpanel`; it does not infer it
-from the Linux distribution name alone. On CloudLinux 7, install a supported
-alt-Python first if the system `python3` is older than 3.9. The installer also
-checks the common `/opt/alt/python*/bin/python3` locations.
+The installer detects cPanel, Plesk, aaPanel, CyberPanel, and DirectAdmin from
+their local installation directories rather than from the OS name. It selects
+only currently active candidate services on a new install; if none can be
+determined, it writes conservative panel defaults. On later installs it
+preserves the existing environment file, so review paths and service names when
+the host configuration changes.
 
-## 3. Configure
+For tenant isolation the service uses `ProtectHome=true`, so it intentionally
+does not monitor optional panel log copies under `/home`. On CyberPanel, the
+default is LiteSpeed's global error log at `/usr/local/lsws/logs/error.log`.
+
+## 3. Configure alerts
+
+Edit the protected configuration file:
 
 ```bash
 sudo nano /etc/server-ai-agent/server-ai-agent.env
 ```
 
-Choose one alert channel. The other channel's credentials may remain empty.
+Set `SERVER_NAME` and choose exactly one delivery channel. Leave unused
+channel credentials empty.
 
-### Email
+### SMTP email
 
 ```dotenv
 SERVER_NAME=prod-web-01
+ENVIRONMENT=production
 
 ALERT_CHANNEL=email
-
 SMTP_HOST=email-smtp.ap-south-1.amazonaws.com
 SMTP_PORT=587
 SMTP_SECURITY=starttls
 SMTP_USERNAME=YOUR_SES_SMTP_USERNAME
 SMTP_PASSWORD=YOUR_SES_SMTP_PASSWORD
 SMTP_FROM=verified-sender@example.com
-SMTP_TO=your-alert-address@example.com
-
-GEMINI_ENABLED=true
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_MAX_OUTPUT_TOKENS=400
+SMTP_TO=ops@example.com,oncall@example.com
 ```
+
+Amazon SES SMTP credentials are different from AWS access keys. Use `starttls`
+or `ssl`; unencrypted SMTP is not accepted.
 
 ### Telegram
 
 ```dotenv
 SERVER_NAME=prod-web-01
+ENVIRONMENT=production
 
 ALERT_CHANNEL=telegram
 TELEGRAM_BOT_TOKEN=123456789:REPLACE_WITH_BOT_TOKEN
 TELEGRAM_CHAT_ID=-1001234567890
-# Leave empty for a normal group/private chat. Set this only for a forum topic.
+# Empty for a private chat or normal group. Set only for a forum topic.
 TELEGRAM_MESSAGE_THREAD_ID=
 ```
 
-Telegram delivery uses the official HTTPS Bot API. The bot must be a member of
-the destination chat and have permission to post. `TELEGRAM_CHAT_ID` can be a
-negative group/supergroup ID. `TELEGRAM_MESSAGE_THREAD_ID` is optional and is
-used only for a topic in a forum-enabled supergroup.
+The bot must be a member of the target chat and permitted to post. A group or
+supergroup chat ID is often negative. `TELEGRAM_MESSAGE_THREAD_ID` is optional
+and only applies to forum-enabled supergroups.
 
-AI analysis is optional and disabled by default. It uses the Gemini HTTPS REST
-API through Python's standard library; no `google-genai` package is installed
-on the server.
-
-When enabled, selected incident details and log samples are sent to the Gemini
-API. Do not enable it if that telemetry must remain on the server.
-
-Before telemetry leaves the server for Gemini, Telegram, or email, the agent
-redacts common credentials: API keys, tokens, passwords, authorization and
-cookie headers, sensitive URL parameters, database URI passwords, and private
-keys. Redaction is applied only to the outbound copy; the original monitored
-log file is never modified. Always review alerts during initial deployment,
-because no pattern-based redaction can guarantee detection of every custom
-secret format.
-
-Important: Amazon SES SMTP credentials are not the same as ordinary AWS access-key credentials.
-
-If AI enrichment is not wanted:
+### Optional Gemini AI enrichment
 
 ```dotenv
-GEMINI_ENABLED=false
-GEMINI_API_KEY=
+GEMINI_ENABLED=true
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_TIMEOUT_SECONDS=8
+GEMINI_MAX_OUTPUT_TOKENS=400
+GEMINI_RATE_LIMIT_PER_MINUTE=10
 ```
 
-All monitoring and selected-channel alerts still work.
+No additional Python package is required: Gemini is called with HTTPS REST via
+the Python standard library. AI is enrichment only; alert delivery continues
+when Gemini is disabled, rate-limited, or unavailable. A 60-second sliding window
+rate limiter (`GEMINI_RATE_LIMIT_PER_MINUTE`) prevents quota exhaustion during
+alert storms.
 
-## 4. Check log permissions
+Before telemetry leaves the server for Gemini, Telegram, or email, the agent
+redacts common credentials: API keys, tokens, passwords, authorization/cookie
+headers, sensitive URL parameters, database URI passwords, and private keys.
+The original monitored files are never modified. Review initial alerts because
+pattern-based redaction cannot identify every custom secret format.
 
-Ubuntu/Debian typically uses:
+### Panel-specific web logs
 
-```text
-/var/log/auth.log
-/var/log/nginx/error.log
-/var/log/apache2/error.log
+`WEB_ERROR_LOGS` is a comma-separated list of explicit absolute paths. The
+installer fills it for a newly detected panel. This agent intentionally does
+not recursively discover every domain/vhost log: scanning `/var/www`, `/home`,
+or `/www/wwwlogs` on a shared-hosting server would create unpredictable I/O and
+could expose tenant data. Add a small, reviewed list of specific high-value
+logs if required:
+
+```dotenv
+WEB_ERROR_LOGS=/var/log/directadmin/error.log,/var/log/httpd/error_log
 ```
 
-RHEL/Rocky/Alma typically uses:
+### Kernel and OOM monitoring
 
-```text
-/var/log/secure
-/var/log/nginx/error.log
-/var/log/httpd/error_log
+The agent inspects `/var/log/kern.log` (Debian/Ubuntu) or `/var/log/messages` (RHEL/CentOS)
+for Out-Of-Memory (OOM) killer events and kernel crashes. On minimal systemd installations
+where traditional log files are absent, it automatically falls back to `journalctl -k`
+using atomic state cursors.
+
+```dotenv
+KERNEL_MONITOR_ENABLED=true
+KERNEL_LOG=/var/log/kern.log
+KERNEL_LOG_RHEL=/var/log/messages
+KERNEL_JOURNAL_FALLBACK=true
 ```
 
-Verify the agent can read the files actually present:
+## 4. Confirm log access
+
+The installer prints a read-access report. Recheck the files actually used by
+your platform as the service account:
 
 ```bash
 sudo -u server-agent test -r /var/log/auth.log && echo auth-readable
@@ -176,23 +227,25 @@ sudo -u server-agent test -r /var/log/secure && echo secure-readable
 sudo -u server-agent test -r /var/log/nginx/error.log && echo nginx-readable
 sudo -u server-agent test -r /var/log/apache2/error.log && echo apache-readable
 sudo -u server-agent test -r /var/log/httpd/error_log && echo httpd-readable
+sudo -u server-agent test -r /etc/apache2/logs/error_log && echo cpanel-apache-readable
 ```
 
-If your distro has unusual log permissions, grant **read-only** access with a group or ACL rather than running the whole monitor as root.
-
-Example ACL:
+Missing files are normal when the corresponding service is not installed. If a
+required existing log is unreadable, grant only read access through the host's
+group/ACL policy—never run the agent as root. For example:
 
 ```bash
 sudo setfacl -m u:server-agent:r /var/log/secure
 ```
 
-If log rotation replaces the file, configure the log-creating daemon/rotation policy to preserve access for the monitoring user rather than repeatedly applying an ACL manually.
+On cPanel, review Apache log ownership and mode after EasyApache or cPanel
+updates. The installer only reports permission problems; it never changes
+cPanel/Apache log permissions automatically.
 
-On cPanel, review the owner and mode of `/etc/apache2/logs/error_log` after an
-EasyApache or cPanel update. The installer only reports missing read access; it
-never changes cPanel/Apache log permissions automatically.
+## 5. Validate and test
 
-## 5. Validate configuration
+Validate the configuration in a transient unit with the same account and
+environment file as the service:
 
 ```bash
 sudo systemd-run --wait --pipe --collect \
@@ -201,13 +254,21 @@ sudo systemd-run --wait --pipe --collect \
   /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
 ```
 
-Expected:
+Expected output:
 
 ```text
 Configuration OK
 ```
 
-## 6. Send a test notification
+Validate the installed unit and logrotate policy without starting or rotating
+anything:
+
+```bash
+sudo systemd-analyze verify /etc/systemd/system/server-ai-agent.service
+sudo logrotate -d /etc/logrotate.d/server-ai-agent
+```
+
+Send one test message through the selected Email or Telegram channel:
 
 ```bash
 sudo systemd-run --wait --pipe --collect \
@@ -216,16 +277,11 @@ sudo systemd-run --wait --pipe --collect \
   /opt/server-ai-agent/venv/bin/python -m server_agent --test-notification
 ```
 
-## 7. Start
+## 6. Start and observe
 
 ```bash
 sudo systemctl start server-ai-agent
-sudo systemctl status server-ai-agent
-```
-
-Watch:
-
-```bash
+sudo systemctl status server-ai-agent --no-pager
 sudo journalctl -u server-ai-agent -f
 ```
 
@@ -235,157 +291,115 @@ Application log:
 sudo tail -f /var/log/server-ai-agent/agent.log
 ```
 
-## 8. Test safely
+On first observation of a log file, the agent starts at EOF. This prevents
+historical entries from generating a flood of alerts after installation.
 
-### Health threshold
+## Configuration reference
 
-Temporarily lower a threshold in the environment file:
+Key operational settings from the generated environment file:
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `HEALTH_INTERVAL` | `60` | Health/service collection interval in seconds. |
+| `LOG_INTERVAL` | `15` | Log polling interval in seconds. |
+| `MAX_LOG_LINES_PER_CYCLE` | `250` | Maximum lines read from each file per log cycle. |
+| `MAX_LOG_LINE_CHARS` | `4096` | Maximum retained characters from one physical log line; oversized lines are consumed and truncated. |
+| `ALERT_COOLDOWN_SECONDS` | `900` | Suppresses repeated alerts for the same fingerprint. |
+| `RECOVERY_ALERTS` | `true` | Sends a recovery event after a health/service condition clears. |
+| `SSH_FAILED_THRESHOLD` | `5` | Failed logins from one IP before an SSH burst alert. |
+| `SSH_FAILED_WINDOW_SECONDS` | `300` | Time window for failed SSH-login counting. |
+| `WEB_ERROR_BATCH_THRESHOLD` | `1` | Matching web-log entries required before an alert. |
+| `MAX_LOG_SAMPLE_CHARS` | `600` | Maximum retained characters per outbound log sample. |
+| `SSH_FAILURE_TRACKED_IPS_MAX` | `1000` | Maximum source IPs retained for SSH burst tracking. |
+
+`SERVICES`, log paths, disk paths, thresholds, trusted SSH networks, and the
+alert channel are all configurable in `/etc/server-ai-agent/server-ai-agent.env`.
+The configuration validator rejects invalid channel, TLS, numeric, and
+threshold settings before the service starts. It also rejects relative
+`WEB_ERROR_LOGS` paths and more than 12 monitored web/panel logs.
+
+## Safe operational tests
+
+For a controlled health-alert test, temporarily set a low threshold, restart,
+confirm the alert, then restore the normal value:
 
 ```dotenv
 CPU_WARNING=1
 ```
 
-Restart:
-
 ```bash
 sudo systemctl restart server-ai-agent
 ```
 
-After testing, restore the normal threshold.
+Use an existing harmless test environment for Nginx/Apache log testing; do not
+intentionally break production services. A successful SSH login generates an
+alert when `SSH_ALERT_SUCCESS=true`.
 
-### SSH login
+## Upgrade from GitHub
 
-SSH into the host from another terminal. A successful login should generate an alert when:
-
-```dotenv
-SSH_ALERT_SUCCESS=true
-```
-
-The first time the agent sees a log file, it starts at EOF. This intentionally prevents historical log entries from generating hundreds of alerts immediately after installation.
-
-### Nginx
-
-Use an existing harmless test environment/log entry rather than deliberately breaking production. The monitor begins from the end of the file and reacts only to newly appended error entries.
-
-## Alert deduplication
-
-Default cooldown:
-
-```dotenv
-ALERT_COOLDOWN_SECONDS=900
-```
-
-So a persistent CPU alert is not emailed every minute. SSH events use fingerprints based on event type/user/source IP. Failed-login bursts use the source IP.
-
-## Trusted SSH networks
-
-```dotenv
-TRUSTED_SSH_NETWORKS=10.0.0.0/8,192.168.0.0/16,203.0.113.10/32
-```
-
-A successful login from a trusted range is INFO. An untrusted successful login is WARNING. Root logins can be CRITICAL.
-
-This classification is only a local policy signal; it is not geolocation or behavioral anomaly detection.
-
-## Important production notes
-
-### Amazon SES
-
-Use the SMTP endpoint for the same SES Region you configured. STARTTLS commonly uses port 587. SES requires TLS for SMTP connections. Verify the sender identity and make sure the Region/account is allowed to send to the destination you need.
-
-### SSH logging
-
-This Phase-1 package parses `/var/log/auth.log` and `/var/log/secure`. On systems configured to keep SSH events only in journald, enable the distro's normal persistent auth logging or extend the collector to the systemd journal.
-
-### Secrets
-
-The environment file is installed mode `0600`:
+The safest update method is a fresh clone and a controlled restart. It keeps
+the existing protected configuration, state, and application logs.
 
 ```bash
-sudo stat /etc/server-ai-agent/server-ai-agent.env
+sudo systemctl stop server-ai-agent
+workdir=$(mktemp -d /tmp/ai-agent-server-monitoring-update.XXXXXX)
+git clone --depth 1 --branch main \
+  https://github.com/nocturnalismee/ai-agent-server-monitoring.git \
+  "$workdir"
+cd "$workdir"
+git log -1 --oneline
+bash -n install.sh
+sudo ./install.sh
 ```
 
-Do not commit the real environment file to Git.
-
-For larger deployments, store secrets in AWS Secrets Manager, GCP Secret Manager, Vault, or equivalent and inject them during deployment.
-
-### systemd hardening
-
-The unit uses:
-
-- dedicated non-login account
-- `NoNewPrivileges=true`
-- `ProtectSystem=strict`
-- `ProtectHome=true`
-- restricted write paths
-- kernel/control-group protection
-- automatic restart on failure
-
-It intentionally needs outbound network access for the selected alert channel
-and optional Gemini enrichment.
+Then rerun the validation and test-notification commands above before starting
+the service again. For critical systems, use a reviewed release tag or commit
+SHA instead of `main`, and preserve a copy of the prior `/opt/server-ai-agent`
+directory before upgrade.
 
 ## Operations
 
-Restart:
-
 ```bash
+# Restart after a configuration change
 sudo systemctl restart server-ai-agent
-```
 
-Logs:
-
-```bash
+# Recent service logs
 sudo journalctl -u server-ai-agent --since "1 hour ago"
-```
 
-Disable:
-
-```bash
+# Disable without uninstalling
 sudo systemctl disable --now server-ai-agent
-```
 
-Uninstall service files while preserving config/state/logs:
-
-```bash
+# Remove the systemd and logrotate files; config, state, and logs remain
 sudo ./uninstall.sh
 ```
 
-## Directory structure
+Installed locations:
 
 ```text
-server-ai-agent/
-├── .env.example
-├── README.md
-├── install.sh
-├── uninstall.sh
-├── requirements.txt
-├── server_agent/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── agent.py
-│   ├── ai.py
-│   ├── config.py
-│   ├── emailer.py
-│   ├── filetail.py
-│   ├── logging_setup.py
-│   ├── models.py
-│   ├── redaction.py
-│   ├── state.py
-│   ├── telegram.py
-│   └── monitors/
-│       ├── __init__.py
-│       ├── health.py
-│       ├── ssh.py
-│       └── web.py
-├── systemd/
-│   └── server-ai-agent.service
-├── logrotate/
-│   └── server-ai-agent
-└── tests/
-    ├── test_ai.py
-    ├── test_redaction.py
-    ├── test_ssh.py
-    └── test_telegram.py
+/opt/server-ai-agent                       Application and virtual environment
+/etc/server-ai-agent/server-ai-agent.env   Protected configuration and secrets
+/var/lib/server-ai-agent                   State, cursors, and cooldown records
+/var/log/server-ai-agent/agent.log         Application log
 ```
 
-> > > > > > > origin/master
+The service is deliberately low impact: health collection is periodic,
+CPU measurement is non-blocking, service checks use one short `systemctl`
+query per configured service, web logs are read incrementally in bounded
+batches, SSH failure state is capped, and the systemd unit runs with lower CPU
+and I/O priority than normal hosted workloads.
+
+## Developer checks
+
+On a development host with Python available, install development dependencies
+in an isolated environment and run:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python3 -m pytest -q
+```
+
+The project includes tests for SSH parsing, Telegram payloads, Gemini REST
+response parsing, and outbound secret redaction.
