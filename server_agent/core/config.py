@@ -322,13 +322,13 @@ class Config:
         web_logs = self.resolved_web_error_logs()
         if len(web_logs) > 12:
             errors.append("WEB_ERROR_LOGS supports at most 12 explicit paths")
-        if any(not Path(path).is_absolute() for path in web_logs):
+        if any(not path.startswith("/") for path in web_logs):
             errors.append("WEB_ERROR_LOGS entries must be absolute paths")
         if self.kernel_monitor_enabled:
             kernel_logs = self.resolved_kernel_logs()
             if len(kernel_logs) > 6:
                 errors.append("KERNEL_ERROR_LOGS supports at most 6 explicit paths")
-            if any(not Path(path).is_absolute() for path in kernel_logs):
+            if any(not path.startswith("/") for path in kernel_logs):
                 errors.append("KERNEL_ERROR_LOGS entries must be absolute paths")
         if not 1 <= self.smtp_port <= 65535:
             errors.append("SMTP_PORT must be between 1 and 65535")
