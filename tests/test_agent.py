@@ -53,3 +53,54 @@ def test_worker_survives_processing_errors():
     assert seen == ["boom", "after"]
     agent._shutdown_worker(timeout=2)
     assert not agent._alert_worker.is_alive()
+
+
+def test_run_once_dispatches_all_monitors_and_drains():
+    agent = _bare_agent()
+    collected = []
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+    agent.health = SimpleNamespace(collect=lambda: ["health-1"])
+    agent.web = SimpleNamespace(collect=lambda: ["web-1"])
+    agent.ssh = SimpleNamespace(collect=lambda: ["ssh-1"])
+    agent.kernel = SimpleNamespace(collect=lambda: ["kernel-1"])
+    agent.dispatch = collected.append
+    agent.drain = lambda: collected.append("drained")
+
+    agent.run_once()
+
+    assert collected == ["health-1", "web-1", "ssh-1", "kernel-1", "drained"]
+
+    agent._shutdown_worker(timeout=2)
+
+
+def test_run_loops_once_then_shuts_down(monkeypatch):
+    import server_agent.agent as agent_module
+
+    agent = _bare_agent()
+    agent.running = True
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+    agent.cfg = SimpleNamespace(
+        server_name="srv1",
+        environment="production",
+        health_interval=0,
+        log_interval=0,
+    )
+    agent.metadata = None
+    agent.health = SimpleNamespace(collect=lambda: ["health-1"])
+    agent.web = SimpleNamespace(collect=lambda: ["web-1"])
+    agent.ssh = SimpleNamespace(collect=lambda: ["ssh-1"])
+    agent.kernel = SimpleNamespace(collect=lambda: ["kernel-1"])
+    seen = []
+    agent.dispatch = seen.append
+    agent.ai = SimpleNamespace(close=lambda: seen.append("closed"))
+
+    def _sleep(_seconds):
+        agent.running = False
+
+    monkeypatch.setattr(agent_module.time, "sleep", _sleep)
+
+    agent.run()
+
+    assert seen[:4] == ["health-1", "web-1", "ssh-1", "kernel-1"]
+    assert "closed" in seen
+    assert not agent._alert_worker.is_alive()
