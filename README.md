@@ -249,6 +249,7 @@ environment file as the service:
 
 ```bash
 sudo systemd-run --wait --pipe --collect \
+  -p WorkingDirectory=/opt/server-ai-agent \
   -p User=server-agent -p Group=server-agent \
   -p EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env \
   /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
@@ -272,6 +273,7 @@ Send one test message through the selected Email or Telegram channel:
 
 ```bash
 sudo systemd-run --wait --pipe --collect \
+  -p WorkingDirectory=/opt/server-ai-agent \
   -p User=server-agent -p Group=server-agent \
   -p EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env \
   /opt/server-ai-agent/venv/bin/python -m server_agent --test-notification

@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Set
 
+from ..filetail import safe_path_exists
 from ..models import Incident
 
 OOM_KILL_RE = re.compile(
@@ -115,7 +116,7 @@ class KernelMonitor:
         """Read newly appended lines from available kernel log files."""
         records: List[tuple[str, str]] = []
         for path_str in self.cfg.resolved_kernel_logs():
-            if not Path(path_str).exists():
+            if not safe_path_exists(path_str):
                 continue
             lines = self.tailer.read_new_lines(
                 path_str,
@@ -163,7 +164,7 @@ class KernelMonitor:
         entries = self._read_from_files()
         if not entries and self.cfg.kernel_journal_fallback:
             # Fall back to journald if no physical kernel log files are present
-            any_file_exists = any(Path(p).exists() for p in self.cfg.resolved_kernel_logs())
+            any_file_exists = any(safe_path_exists(p) for p in self.cfg.resolved_kernel_logs())
             if not any_file_exists:
                 entries = self._read_from_journal()
 

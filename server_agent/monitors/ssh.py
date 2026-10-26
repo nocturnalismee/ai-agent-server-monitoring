@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+from ..filetail import safe_path_exists
 from ..models import Incident
 
 SUCCESS_RE = re.compile(
@@ -45,7 +46,7 @@ class SSHMonitor:
     def _auth_paths(self):
         paths = []
         for p in (self.cfg.auth_log, self.cfg.auth_log_rhel):
-            if p and p not in paths and Path(p).exists():
+            if p and p not in paths and safe_path_exists(p):
                 paths.append(p)
         return paths
 

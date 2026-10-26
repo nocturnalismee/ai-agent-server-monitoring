@@ -60,7 +60,7 @@ detect_profile() {
     SERVICE_CANDIDATES=directadmin,httpd,nginx,sshd,ssh
   elif [[ -d /www/server/panel ]]; then
     PLATFORM_PROFILE=aapanel
-    WEB_ERROR_LOGS=/www/server/nginx/logs/error.log,/www/wwwlogs/error_log
+    WEB_ERROR_LOGS=/www/server/nginx/logs/error.log,/www/server/apache/logs/error_log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
     SERVICE_CANDIDATES=nginx,httpd,apache2,sshd,ssh
@@ -249,6 +249,7 @@ main() {
   "$PYTHON_BIN" -m venv "$APP_DIR/venv"
   "$APP_DIR/venv/bin/pip" install --upgrade pip
   "$APP_DIR/venv/bin/pip" install --disable-pip-version-check --no-input -r "$APP_DIR/requirements.txt"
+  "$APP_DIR/venv/bin/python" -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'server-ai-agent.pth').write_text('$APP_DIR\n')"
 
   if [[ ! -f $ETC_DIR/server-ai-agent.env ]]; then
     install -m 0600 .env.example "$ETC_DIR/server-ai-agent.env"
@@ -268,8 +269,8 @@ main() {
 
   echo
   echo "Installation complete. Edit: sudo nano $ETC_DIR/server-ai-agent.env"
-  echo "Validate: sudo systemd-run --wait --pipe --collect -p User=$SERVICE_USER -p Group=$SERVICE_USER -p EnvironmentFile=$ETC_DIR/server-ai-agent.env $APP_DIR/venv/bin/python -m server_agent --check-config"
-  echo "Test notification: sudo systemd-run --wait --pipe --collect -p User=$SERVICE_USER -p Group=$SERVICE_USER -p EnvironmentFile=$ETC_DIR/server-ai-agent.env $APP_DIR/venv/bin/python -m server_agent --test-notification"
+  echo "Validate: sudo systemd-run --wait --pipe --collect -p WorkingDirectory=$APP_DIR -p User=$SERVICE_USER -p Group=$SERVICE_USER -p EnvironmentFile=$ETC_DIR/server-ai-agent.env $APP_DIR/venv/bin/python -m server_agent --check-config"
+  echo "Test notification: sudo systemd-run --wait --pipe --collect -p WorkingDirectory=$APP_DIR -p User=$SERVICE_USER -p Group=$SERVICE_USER -p EnvironmentFile=$ETC_DIR/server-ai-agent.env $APP_DIR/venv/bin/python -m server_agent --test-notification"
   echo "If a required log is unreadable, grant only read access using the distro/cPanel log policy or a reviewed ACL; do not run the agent as root."
 }
 

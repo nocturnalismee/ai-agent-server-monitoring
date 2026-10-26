@@ -7,6 +7,16 @@ from typing import List
 from .state import StateStore
 
 
+def safe_path_exists(path_str: str) -> bool:
+    """Check path existence safely, suppressing PermissionError (e.g. Python 3.12+ parent traversal)."""
+    if not path_str:
+        return False
+    try:
+        return os.path.exists(path_str)
+    except (PermissionError, OSError):
+        return False
+
+
 class FileTailer:
     """Incrementally read appended log lines and survive truncation/rotation."""
 

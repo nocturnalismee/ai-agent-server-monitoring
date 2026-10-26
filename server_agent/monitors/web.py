@@ -5,6 +5,7 @@ from collections import Counter
 from pathlib import Path
 from typing import List
 
+from ..filetail import safe_path_exists
 from ..models import Incident
 
 ERROR_PATTERNS = {
@@ -105,7 +106,7 @@ class WebLogMonitor:
         ]
         seen = set()
         for server, path in candidates:
-            if path in seen or not Path(path).exists():
+            if path in seen or not safe_path_exists(path):
                 continue
             seen.add(path)
             lines = self.tailer.read_new_lines(
