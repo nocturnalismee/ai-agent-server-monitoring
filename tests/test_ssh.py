@@ -1,4 +1,5 @@
-from server_agent.monitors.ssh import SUCCESS_RE, FAIL_RE
+from server_agent.monitors.ssh import FAIL_RE, SUCCESS_RE
+
 
 def test_success():
     line = "sshd[123]: Accepted publickey for ubuntu from 203.0.113.5 port 55422 ssh2"

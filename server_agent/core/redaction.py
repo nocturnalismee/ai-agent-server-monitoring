@@ -6,7 +6,6 @@ from typing import Any, Dict, Tuple
 
 from .models import Incident
 
-
 REDACTED = "[REDACTED]"
 _SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|"

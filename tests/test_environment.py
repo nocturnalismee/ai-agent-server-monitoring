@@ -1,6 +1,6 @@
+from server_agent.core.models import ServerMetadata
 from server_agent.detectors.environment import EnvironmentDetector
 from server_agent.detectors.services import ServiceDetector
-from server_agent.core.models import ServerMetadata
 
 
 def test_environment_detector_returns_metadata():

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-from typing import Optional
 
 from ..core.models import Incident
 

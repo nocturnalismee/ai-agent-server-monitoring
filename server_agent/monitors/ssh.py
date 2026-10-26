@@ -3,8 +3,6 @@ from __future__ import annotations
 import ipaddress
 import re
 import time
-from pathlib import Path
-from typing import Optional, Tuple
 
 from ..collectors.filetail import safe_path_exists
 from ..core.models import Incident
