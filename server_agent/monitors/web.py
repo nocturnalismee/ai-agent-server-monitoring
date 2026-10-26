@@ -5,8 +5,8 @@ from collections import Counter
 from pathlib import Path
 from typing import List
 
-from ..filetail import safe_path_exists
-from ..models import Incident
+from ..collectors.filetail import safe_path_exists
+from ..core.models import Incident
 
 ERROR_PATTERNS = {
     "upstream timeout": re.compile(r"upstream timed out", re.I),

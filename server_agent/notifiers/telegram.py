@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import html
+import json
+import re
+from datetime import datetime
+from typing import Any, Dict, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from ..core.models import Incident, ServerMetadata
+from .base import BaseNotifier
+
+# Severity → emoji indicator
+_SEVERITY_EMOJI = {
+    "CRITICAL": "🔴",
+    "WARNING":  "🟡",
+    "INFO":     "🟢",
+    "RECOVERY": "✅",
+}
+
+
+def _e(text: object) -> str:
+    """Escape a value for Telegram HTML parse_mode."""
+    return html.escape(str(text) if text is not None else "")
+
+
+def _fmt_timestamp(ts: str) -> str:
+    """Convert ISO timestamp to a readable string."""
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return ts
+
+
+def _format_ai_text(raw_text: str) -> str:
+    """Format AI output with HTML tags for Telegram.
+    Converts backticked commands `command` into <code>command</code>,
+    and formats shell commands nicely for one-tap copy on mobile.
+    """
+    if not raw_text:
+        return ""
+
+    escaped = html.escape(raw_text.strip())
+
+    # Replace `code` with <code>code</code>
+    formatted = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+
+    # Format bold headers like **Header:** -> <b>Header:</b>
+    formatted = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", formatted)
+
+    return formatted
+
+
+class TelegramNotifier(BaseNotifier):
+    """Send structured alerts using Telegram's HTTPS Bot API (HTML mode)."""
+
+    _MAX_MESSAGE_LENGTH = 4096
+
+    def __init__(self, config, logger, metadata: Optional[ServerMetadata] = None):
+        super().__init__(config, logger, metadata)
+
+    @staticmethod
+    def _short_name(server_name: str) -> str:
+        """Return the first label of the hostname (e.g. 'app' from 'app.domain.id')."""
+        return server_name.split(".")[0] if server_name else server_name
+
+    def _message(self, incident: Incident) -> str:
+        sev = incident.severity.upper()
+        emoji = _SEVERITY_EMOJI.get(sev, "⚪")
+        short = self._short_name(self.cfg.server_name)
+
+        # ── Header: emoji + short hostname + severity + title ─────
+        lines = [
+            f"{emoji} <b>[{_e(short)}] {_e(sev)}: {_e(incident.title)}</b>",
+            "",
+        ]
+
+        # ── Server info & OS/Panel badge ─────────────────────────
+        ts = _fmt_timestamp(incident.timestamp)
+        lines += [
+            f"🖥 <b>{_e(self.cfg.server_name)}</b>  ·  {_e(self.cfg.environment)}  ·  {_e(ts)}",
+        ]
+
+        if self.metadata and self.metadata.badge():
+            lines += [
+                f"🏷️ <code>{_e(self.metadata.badge())}</code>",
+            ]
+        lines.append("")
+
+        # ── Summary ───────────────────────────────────────────────
+        if incident.summary:
+            lines += [
+                f"📋 <b>Summary</b>",
+                f"<code>{_e(incident.summary)}</code>",
+                "",
+            ]
+
+        # ── Details (key: value pairs) ────────────────────────────
+        if incident.details:
+            detail_items = []
+            for k, v in incident.details.items():
+                val_str = _e(v) if v not in ("", None) else "—"
+                detail_items.append(f"<b>{_e(k.upper())}</b>: {val_str}")
+            lines += [
+                f"🔍 <b>Details</b>",
+                "  |  ".join(detail_items),
+                "",
+            ]
+
+        # ── AI Analysis & Troubleshooting ─────────────────────────
+        if incident.ai_analysis:
+            formatted_ai = _format_ai_text(incident.ai_analysis)
+            lines += [
+                "🤖 <b>AI Diagnosis & Troubleshooting</b>",
+                formatted_ai,
+                "",
+            ]
+
+        # ── Footer ────────────────────────────────────────────────
+        lines.append(f"<i>{_e(self.cfg.server_name)} · {_e(self.cfg.environment)}</i>")
+
+        message = "\n".join(lines)
+        if len(message) > self._MAX_MESSAGE_LENGTH:
+            message = message[: self._MAX_MESSAGE_LENGTH - 32] + "\n…<i>[truncated]</i>"
+        return message
+
+    def _payload(self, incident: Incident) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "chat_id": self.cfg.telegram_chat_id,
+            "text": self._message(incident),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if self.cfg.telegram_message_thread_id is not None:
+            payload["message_thread_id"] = self.cfg.telegram_message_thread_id
+        return payload
+
+    def send(self, incident: Incident) -> bool:
+        body = json.dumps(self._payload(incident), ensure_ascii=False).encode("utf-8")
+        request = Request(
+            f"https://api.telegram.org/bot{self.cfg.telegram_bot_token}/sendMessage",
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.cfg.telegram_timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if not isinstance(data, dict) or not data.get("ok"):
+                description = (
+                    data.get("description", "unknown error")
+                    if isinstance(data, dict)
+                    else "invalid response"
+                )
+                self.logger.error("Telegram API rejected alert: %s", description)
+                return False
+            self.logger.info(
+                "Telegram alert sent: severity=%s title=%s",
+                incident.severity,
+                incident.title,
+            )
+            return True
+        except HTTPError as exc:
+            self.logger.error("Telegram API returned HTTP %s", exc.code)
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            self.logger.error("Telegram alert delivery failed: %s", exc)
+        return False
+
+    def send_test(self) -> bool:
+        return self.send(
+            Incident(
+                kind="test",
+                severity="INFO",
+                title="Server AI Agent test",
+                summary="Telegram notification configuration is working correctly.",
+                fingerprint="test",
+                details={"status": "ok", "transport": "telegram"},
+            )
+        )

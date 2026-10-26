@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-from ..filetail import safe_path_exists
-from ..models import Incident
+from ..collectors.filetail import safe_path_exists
+from ..core.models import Incident
 
 SUCCESS_RE = re.compile(
     r"Accepted\s+(?P<method>\S+)\s+for\s+(?P<user>\S+)\s+from\s+(?P<ip>[0-9a-fA-F:.]+)\s+port\s+(?P<port>\d+)",

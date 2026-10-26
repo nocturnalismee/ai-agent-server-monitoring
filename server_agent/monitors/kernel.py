@@ -5,8 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Set
 
-from ..filetail import safe_path_exists
-from ..models import Incident
+from ..collectors.filetail import safe_path_exists
+from ..core.models import Incident
 
 OOM_KILL_RE = re.compile(
     r"(?:Out of memory|Memory cgroup out of memory).*?Kill(?:ed)?\s+process\s+(?P<pid>\d+)\s+\((?P<process>[^)]+)\)",

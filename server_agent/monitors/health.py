@@ -7,7 +7,8 @@ from typing import Dict, List, Tuple
 
 import psutil
 
-from ..models import Incident
+from ..core.models import Incident
+from ..detectors.services import ServiceDetector
 
 
 class HealthMonitor:
@@ -15,6 +16,16 @@ class HealthMonitor:
         self.cfg = config
         self.state = state
         self.logger = logger
+
+        # Filter installed services if auto_detect_services is enabled
+        if getattr(config, "auto_detect_services", True):
+            detector = ServiceDetector(logger)
+            self.monitored_services = detector.filter_installed_services(self.cfg.services)
+            if self.logger:
+                self.logger.info("Monitored installed services: %s", ", ".join(self.monitored_services) or "none")
+        else:
+            self.monitored_services = list(self.cfg.services)
+
         # Prime psutil's non-blocking CPU counter. Subsequent calls are based
         # on elapsed time and do not pause the monitoring loop for one second.
         psutil.cpu_percent(interval=None)
@@ -107,7 +118,7 @@ class HealthMonitor:
             if incident:
                 incidents.append(incident)
 
-        for service in self.cfg.services:
+        for service in self.monitored_services:
             state, err = self._service_state(service)
             if state == "unknown" and not self.cfg.alert_on_missing_service:
                 continue

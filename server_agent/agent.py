@@ -5,18 +5,20 @@ import signal
 import sys
 import time
 
-from .ai import AIAnalyzer
-from .config import Config
-from .emailer import EmailNotifier
-from .filetail import FileTailer
-from .logging_setup import setup_logging
+from .ai.analyzer import AIAnalyzer
+from .collectors.evidence import EvidenceCollector
+from .collectors.filetail import FileTailer
+from .core.config import Config
+from .core.logging_setup import setup_logging
+from .core.redaction import sanitize_incident
+from .core.state import StateStore
+from .detectors.environment import EnvironmentDetector
 from .monitors.health import HealthMonitor
 from .monitors.kernel import KernelMonitor
 from .monitors.ssh import SSHMonitor
 from .monitors.web import WebLogMonitor
-from .state import StateStore
-from .telegram import TelegramNotifier
-from .redaction import sanitize_incident
+from .notifiers.emailer import EmailNotifier
+from .notifiers.telegram import TelegramNotifier
 
 
 class Agent:
@@ -24,21 +26,37 @@ class Agent:
         cfg.validate()
         self.cfg = cfg
         self.log = setup_logging(cfg.log_file, cfg.log_level)
+
+        # Detect server OS, control panel, web & database stack
+        self.env_detector = EnvironmentDetector(self.log)
+        self.metadata = (
+            self.env_detector.detect()
+            if getattr(cfg, "auto_detect_environment", True)
+            else None
+        )
+
         self.state = StateStore(
             cfg.state_dir,
             cfg.ssh_failure_tracked_ips_max,
             cfg.ssh_failed_threshold,
         )
         self.tailer = FileTailer(self.state, self.log)
+        self.evidence_collector = (
+            EvidenceCollector(max_lines=getattr(cfg, "evidence_lines", 15), logger=self.log)
+            if getattr(cfg, "collect_incident_evidence", True)
+            else None
+        )
+
         self.health = HealthMonitor(cfg, self.state, self.log)
         self.web = WebLogMonitor(cfg, self.tailer, self.log)
         self.ssh = SSHMonitor(cfg, self.state, self.tailer, self.log)
         self.kernel = KernelMonitor(cfg, self.state, self.tailer, self.log)
-        self.ai = AIAnalyzer(cfg, self.log)
+
+        self.ai = AIAnalyzer(cfg, self.log, metadata=self.metadata)
         self.notifier = (
-            EmailNotifier(cfg, self.log)
+            EmailNotifier(cfg, self.log, metadata=self.metadata)
             if cfg.alert_channel == "email"
-            else TelegramNotifier(cfg, self.log)
+            else TelegramNotifier(cfg, self.log, metadata=self.metadata)
         )
         self.running = True
 
@@ -52,6 +70,10 @@ class Agent:
         ):
             self.log.info("Suppressed duplicate alert: %s", incident.fingerprint)
             return
+
+        # Collect real-time diagnostic evidence logs before notifying or asking AI
+        if self.evidence_collector and not getattr(incident, "evidence", ""):
+            incident.evidence = self.evidence_collector.collect(incident)
 
         # Source logs remain local. Only this safe copy can leave the server.
         external_incident = sanitize_incident(incident)
@@ -78,8 +100,12 @@ class Agent:
             self.dispatch(incident)
 
     def run(self):
+        badge = f" [{self.metadata.badge()}]" if self.metadata else ""
         self.log.info(
-            "Server AI Agent started server=%s env=%s", self.cfg.server_name, self.cfg.environment
+            "Server AI Agent started server=%s env=%s%s",
+            self.cfg.server_name,
+            self.cfg.environment,
+            badge,
         )
         last_health = 0.0
         last_logs = 0.0
