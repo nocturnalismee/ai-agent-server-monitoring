@@ -86,8 +86,9 @@ class AIAnalyzer:
                 "temperature": 0.2,
             },
         }
+        url = f"{self._API_BASE}/{self.cfg.gemini_model}:generateContent?key={self.cfg.gemini_api_key}"
         request = Request(
-            f"{self._API_BASE}/{self.cfg.gemini_model}:generateContent",
+            url,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Content-Type": "application/json; charset=utf-8",
@@ -105,7 +106,20 @@ class AIAnalyzer:
                 return ""
             return self._extract_text(data)[:4000]
         except HTTPError as exc:
-            self.logger.warning("Gemini API returned HTTP %s", exc.code)
+            err_msg = ""
+            try:
+                raw_err = exc.read().decode("utf-8", errors="replace")
+                parsed_err = json.loads(raw_err)
+                if isinstance(parsed_err, dict) and "error" in parsed_err:
+                    err_msg = parsed_err["error"].get("message", "")
+                if not err_msg:
+                    err_msg = raw_err[:250]
+            except Exception:
+                err_msg = ""
+            if err_msg:
+                self.logger.warning("Gemini API returned HTTP %s: %s", exc.code, err_msg)
+            else:
+                self.logger.warning("Gemini API returned HTTP %s", exc.code)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             self.logger.warning("Gemini analysis failed: %s", exc)
         return ""
