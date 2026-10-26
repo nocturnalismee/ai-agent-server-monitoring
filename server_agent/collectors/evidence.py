@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Optional
 
@@ -38,6 +39,9 @@ class EvidenceCollector:
         return ""
 
     def _collect_service_journal(self, service: str) -> str:
+        # Security hardening: reject any service name that contains non-alphanumeric chars or flags
+        if not re.match(r"^[a-zA-Z0-9_@.-]+$", service):
+            return ""
         try:
             p = subprocess.run(
                 ["journalctl", "-u", service, "-n", str(self.max_lines), "--no-pager"],
@@ -86,10 +90,12 @@ class EvidenceCollector:
         return ""
 
     def _collect_disk_overview(self, mount: str) -> str:
+        target = mount if mount.startswith("/") else "/"
+        if not re.match(r"^[a-zA-Z0-9/_.-]+$", target):
+            target = "/"
         try:
-            target = mount if mount.startswith("/") else "/"
             p = subprocess.run(
-                ["df", "-h", target],
+                ["df", "-h", "--", target],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,

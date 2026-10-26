@@ -36,12 +36,16 @@ _PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
     re.DOTALL,
 )
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+_API_TOKEN = re.compile(r"\b(?:ghp|gho|glpat|sk-[a-zA-Z0-9]{15,})[A-Za-z0-9_=-]+\b")
 
 
 def sanitize_text(value: str) -> Tuple[str, bool]:
     """Remove common credentials while retaining useful operational context."""
     result = value
     result = _PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", result)
+    result = _JWT.sub("[REDACTED JWT]", result)
+    result = _API_TOKEN.sub("[REDACTED TOKEN]", result)
     result = _HEADER_SECRET.sub(r"\1" + REDACTED, result)
     result = _URL_SECRET.sub(r"\1" + REDACTED, result)
     result = _ASSIGNMENT_SECRET.sub(r"\1" + REDACTED, result)
