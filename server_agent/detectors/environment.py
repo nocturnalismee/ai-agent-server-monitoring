@@ -31,6 +31,24 @@ def _safe_read_text(path_str: str) -> str:
         return ""
 
 
+# Distro IDs from ID and ID_LIKE, used to classify derivatives such as Linux Mint.
+_RHEL_IDS = {"cloudlinux", "almalinux", "rocky", "centos", "rhel", "fedora", "ol", "oracle"}
+_DEBIAN_IDS = {
+    "ubuntu",
+    "debian",
+    "raspbian",
+    "pop",
+    "linuxmint",
+    "elementary",
+    "zorin",
+    "kali",
+    "neon",
+    "mx",
+}
+_ARCH_IDS = {"arch", "manjaro", "endeavouros", "garuda"}
+_ALPINE_IDS = {"alpine"}
+
+
 class EnvironmentDetector:
     """Auto-detect operating system, hosting control panel, and active software stack."""
 
@@ -109,19 +127,21 @@ class EnvironmentDetector:
                         data[k.strip()] = v.strip().strip('"\'')
 
                 raw_id = data.get("ID", "").lower()
+                id_like = data.get("ID_LIKE", "").lower().split()
                 pretty_name = data.get("PRETTY_NAME") or data.get("NAME") or raw_id.title()
                 version_id = data.get("VERSION_ID", "")
 
                 info["name"] = pretty_name
                 info["version"] = version_id
 
-                if raw_id in {"cloudlinux", "almalinux", "rocky", "centos", "rhel", "fedora", "ol"}:
+                tokens = [raw_id, *id_like] if raw_id else list(id_like)
+                if any(token in _RHEL_IDS for token in tokens):
                     info["family"] = "rhel"
-                elif raw_id in {"ubuntu", "debian", "raspbian", "pop"}:
+                elif any(token in _DEBIAN_IDS for token in tokens):
                     info["family"] = "debian"
-                elif raw_id in {"arch", "manjaro"}:
+                elif any(token in _ARCH_IDS for token in tokens):
                     info["family"] = "arch"
-                elif raw_id in {"alpine"}:
+                elif any(token in _ALPINE_IDS for token in tokens):
                     info["family"] = "alpine"
                 break
             except Exception:
@@ -133,7 +153,12 @@ class EnvironmentDetector:
         for cmd in ("apt-get", "apt", "dnf", "yum", "pacman", "apk"):
             if shutil.which(cmd):
                 return cmd
-        return "apt" if os_family == "debian" else ("dnf" if os_family == "rhel" else "")
+        return {
+            "debian": "apt",
+            "rhel": "dnf",
+            "arch": "pacman",
+            "alpine": "apk",
+        }.get(os_family, "")
 
     @staticmethod
     def _detect_panel() -> tuple[str, str]:

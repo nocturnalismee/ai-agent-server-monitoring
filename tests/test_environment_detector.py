@@ -175,8 +175,38 @@ def test_detect_os_unknown_id_without_names(monkeypatch):
     assert info["family"] == "linux"
 
 
-def test_detect_os_ignores_id_like_alone(monkeypatch):
+def test_detect_os_uses_id_like_when_id_unknown(monkeypatch):
+    content = 'ID=customos\nID_LIKE="ubuntu debian"\nPRETTY_NAME="Custom OS"\n'
+    monkeypatch.setattr(env.platform, "system", lambda: "Linux")
+    _patch_read_text(monkeypatch, {"/etc/os-release": content})
+
+    info = EnvironmentDetector._detect_os()
+
+    assert info["family"] == "debian"
+
+
+def test_detect_os_maps_linux_mint_to_debian(monkeypatch):
     content = 'ID=linuxmint\nID_LIKE="ubuntu debian"\nPRETTY_NAME="Linux Mint"\n'
+    monkeypatch.setattr(env.platform, "system", lambda: "Linux")
+    _patch_read_text(monkeypatch, {"/etc/os-release": content})
+
+    info = EnvironmentDetector._detect_os()
+
+    assert info["family"] == "debian"
+
+
+def test_detect_os_uses_id_like_for_rhel_derivatives(monkeypatch):
+    content = 'ID=customel\nID_LIKE="rhel centos fedora"\nPRETTY_NAME="Custom EL"\n'
+    monkeypatch.setattr(env.platform, "system", lambda: "Linux")
+    _patch_read_text(monkeypatch, {"/etc/os-release": content})
+
+    info = EnvironmentDetector._detect_os()
+
+    assert info["family"] == "rhel"
+
+
+def test_detect_os_ignores_unsupported_id_like(monkeypatch):
+    content = 'ID=customos\nID_LIKE="gentoo"\nPRETTY_NAME="Custom OS"\n'
     monkeypatch.setattr(env.platform, "system", lambda: "Linux")
     _patch_read_text(monkeypatch, {"/etc/os-release": content})
 
@@ -418,8 +448,8 @@ def test_detect_pkg_manager_prefers_first_available(monkeypatch, available, expe
     [
         ("debian", "apt"),
         ("rhel", "dnf"),
-        ("arch", ""),
-        ("alpine", ""),
+        ("arch", "pacman"),
+        ("alpine", "apk"),
         ("linux", ""),
     ],
 )
