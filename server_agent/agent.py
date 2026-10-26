@@ -237,10 +237,13 @@ class Agent:
         # Source logs remain local. Only this safe copy can leave the server.
         external_incident = sanitize_incident(incident)
 
-        # AI is enrichment only; alerting never depends on it.
+        # AI is enrichment only; alerting must never depend on it.
         if incident.severity in {"WARNING", "CRITICAL"}:
-            external_incident.ai_analysis = self.ai.analyze(external_incident)
-            external_incident = sanitize_incident(external_incident)
+            try:
+                external_incident.ai_analysis = self.ai.analyze(external_incident)
+                external_incident = sanitize_incident(external_incident)
+            except Exception:
+                self.log.exception("AI analysis failed; sending alert without it")
 
         # A failed delivery must not suppress the next alert.
         delivered = self.notifier.send(external_incident)

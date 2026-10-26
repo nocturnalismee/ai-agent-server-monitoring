@@ -104,3 +104,41 @@ def test_run_loops_once_then_shuts_down(monkeypatch):
     assert seen[:4] == ["health-1", "web-1", "ssh-1", "kernel-1"]
     assert "closed" in seen
     assert not agent._alert_worker.is_alive()
+
+
+def test_ai_failure_does_not_suppress_alert():
+    from server_agent.core.models import Incident
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(
+        alert_cooldown_seconds=900,
+        escalation_min_severity="CRITICAL",
+    )
+    marked = []
+    agent.state = SimpleNamespace(
+        can_alert=lambda fingerprint, cooldown: True,
+        mark_alert_sent=lambda fingerprint, cooldown: marked.append(fingerprint),
+    )
+    agent.evidence_collector = None
+
+    def _fail(_incident):
+        raise RuntimeError("provider exploded")
+
+    agent.ai = SimpleNamespace(analyze=_fail, close=lambda: None)
+    sent = []
+    agent.notifier = SimpleNamespace(send=lambda incident: sent.append(incident) or True)
+    agent.escalation_notifier = None
+
+    incident = Incident(
+        kind="health",
+        severity="CRITICAL",
+        title="CPU high",
+        summary="CPU is 99%",
+        fingerprint="health:CPU",
+    )
+    agent._process(incident)
+
+    assert len(sent) == 1
+    assert marked == ["health:CPU"]
+    agent._shutdown_worker(timeout=2)
+    assert not agent._alert_worker.is_alive()

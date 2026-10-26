@@ -108,7 +108,9 @@ class AIAnalyzer:
         if not isinstance(choices, list) or not choices:
             return ""
         first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message", {}) if isinstance(first, dict) else {}
+        message = first.get("message")
+        if not isinstance(message, dict):
+            return ""
         text = message.get("content", "")
         return text.strip() if isinstance(text, str) else ""
 
@@ -221,7 +223,7 @@ class AIAnalyzer:
         try:
             request = self._build_request(payload)
             with urlopen(request, timeout=self.timeout, context=self.ssl_context) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
             if not isinstance(data, dict):
                 self.logger.warning("%s API returned an invalid response", self.provider.title())
                 return ""
@@ -248,7 +250,15 @@ class AIAnalyzer:
                 )
             else:
                 self.logger.warning("%s API returned HTTP %s", self.provider.title(), exc.code)
-        except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        except (
+            URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            OSError,
+            UnicodeDecodeError,
+            AttributeError,
+            TypeError,
+        ) as exc:
             self.logger.warning("%s analysis failed: %s", self.provider.title(), exc)
         return ""
 

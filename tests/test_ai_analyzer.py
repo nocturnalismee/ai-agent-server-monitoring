@@ -479,3 +479,17 @@ def test_close_is_a_repeatable_noop():
 
     assert analyzer.close() is None
     assert analyzer.close() is None
+
+
+def test_extract_openai_text_handles_null_message():
+    assert AIAnalyzer._extract_openai_text({"choices": [{"message": None}]}) == ""
+
+
+def test_analyze_returns_empty_on_invalid_utf8_response():
+    logger = Mock()
+    analyzer = AIAnalyzer(_config(), logger)
+    with patch(
+        "server_agent.ai.analyzer.urlopen",
+        return_value=_FakeResponse(b"\xff\xfe\x00"),
+    ):
+        assert analyzer.analyze(_incident()) == ""
