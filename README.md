@@ -187,8 +187,29 @@ ENVIRONMENT=production
   sound.
 - Common layouts: one topic per server (recommended), one topic per customer
   bucket, or one group per customer (different `TELEGRAM_CHAT_ID` per server).
-  Severity-based routing to multiple channels is not supported yet (single
-  channel per instance).
+- For severity-based routing, set `ESCALATION_CHANNEL=telegram` with a central
+  chat id; WARNING/CRITICAL incidents go to both the per-server channel and the
+  central one (see Critical Alert Escalation below).
+
+### Critical Alert Escalation
+
+Keep per-server alerts in their own topics while still paging a central ops
+channel for serious incidents. The primary channel always receives every alert;
+the escalation channel receives only incidents at or above
+`ESCALATION_MIN_SEVERITY`.
+
+```env
+ESCALATION_CHANNEL=telegram
+ESCALATION_TELEGRAM_BOT_TOKEN=
+ESCALATION_TELEGRAM_CHAT_ID=-1001234567890
+ESCALATION_TELEGRAM_MESSAGE_THREAD_ID=
+ESCALATION_MIN_SEVERITY=CRITICAL
+```
+
+Leave `ESCALATION_TELEGRAM_BOT_TOKEN` empty to reuse `TELEGRAM_BOT_TOKEN`. The
+same per-fingerprint cooldown applies to both channels, so a CRITICAL alert is
+not repeated every cycle. `--test-notification` sends a test to both the primary
+and escalation destinations.
 
 ### SMTP Email
 
@@ -370,10 +391,16 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `EVIDENCE_LINES` | `15` | Number of lines captured for incident evidence. |
 | `HEALTH_INTERVAL` | `60` | Health check interval in seconds. |
 | `LOG_INTERVAL` | `15` | Log polling interval in seconds. |
+| `LOG_FORMAT` | `text` | Log output format: `text` (human-readable) or `json` (one object per line). |
 | `HEARTBEAT_STALE_SECONDS` | `300` | Alert if the agent heartbeat is older than this (watchdog timer). |
 | `MAX_LOG_LINES_PER_CYCLE` | `250` | Maximum lines processed per file per log cycle. |
 | `MAX_LOG_LINE_CHARS` | `4096` | Max characters per physical log line (oversized lines are bounded). |
 | `TELEGRAM_MESSAGE_THREAD_ID` | _(unset)_ | Forum topic id for multi-server deployments (one per server). |
+| `ESCALATION_CHANNEL` | `none` | Secondary channel for serious incidents: `none` or `telegram`. |
+| `ESCALATION_TELEGRAM_BOT_TOKEN` | _(unset)_ | Escalation bot token; falls back to `TELEGRAM_BOT_TOKEN`. |
+| `ESCALATION_TELEGRAM_CHAT_ID` | _(unset)_ | Central chat/group id for escalated alerts. |
+| `ESCALATION_TELEGRAM_MESSAGE_THREAD_ID` | _(unset)_ | Optional forum topic id for the escalation channel. |
+| `ESCALATION_MIN_SEVERITY` | `CRITICAL` | Minimum severity that is also sent to the escalation channel. |
 | `LOAD_WARNING_PER_CPU` | `1.5` | 1-minute load average per CPU that triggers a warning. |
 | `LOAD_CRITICAL_PER_CPU` | `2.5` | 1-minute load average per CPU that triggers a critical alert. |
 | `ALERT_COOLDOWN_SECONDS` | `900` | Cooldown period before repeating an alert with the same fingerprint. |

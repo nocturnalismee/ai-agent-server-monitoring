@@ -151,6 +151,20 @@ class Config:
     telegram_message_thread_id: Optional[int] = _optional_int("TELEGRAM_MESSAGE_THREAD_ID")
     telegram_timeout: int = _int("TELEGRAM_TIMEOUT", 10)
 
+    escalation_channel: str = os.getenv("ESCALATION_CHANNEL", "none").strip().lower()
+    escalation_telegram_bot_token: str = os.getenv(
+        "ESCALATION_TELEGRAM_BOT_TOKEN", ""
+    ).strip()
+    escalation_telegram_chat_id: str = os.getenv(
+        "ESCALATION_TELEGRAM_CHAT_ID", ""
+    ).strip()
+    escalation_telegram_message_thread_id: Optional[int] = _optional_int(
+        "ESCALATION_TELEGRAM_MESSAGE_THREAD_ID"
+    )
+    escalation_min_severity: str = os.getenv(
+        "ESCALATION_MIN_SEVERITY", "CRITICAL"
+    ).strip().upper()
+
     ai_enabled: bool = _bool("AI_ENABLED", _bool("GEMINI_ENABLED", False))
     ai_provider: str = (
         _env_str("AI_PROVIDER") or ("gemini" if _env_str("GEMINI_API_KEY") else "deepseek")
@@ -165,6 +179,7 @@ class Config:
     state_dir: Path = Path(os.getenv("STATE_DIR", "/var/lib/server-ai-agent"))
     log_file: Path = Path(os.getenv("LOG_FILE", "/var/log/server-ai-agent/agent.log"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_format: str = os.getenv("LOG_FORMAT", "text").strip().lower()
 
     def resolved_ai_model(self) -> str:
         if self.ai_model:
@@ -260,10 +275,33 @@ class Config:
                 errors.append("TELEGRAM_CHAT_ID is required when ALERT_CHANNEL=telegram")
             if self.telegram_message_thread_id is not None and self.telegram_message_thread_id < 1:
                 errors.append("TELEGRAM_MESSAGE_THREAD_ID must be a positive integer when set")
+        if self.escalation_channel not in {"none", "telegram"}:
+            errors.append("ESCALATION_CHANNEL must be none or telegram")
+        if self.escalation_channel == "telegram":
+            if not (self.escalation_telegram_bot_token or self.telegram_bot_token):
+                errors.append(
+                    "ESCALATION_TELEGRAM_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) is required "
+                    "when ESCALATION_CHANNEL=telegram"
+                )
+            if not self.escalation_telegram_chat_id:
+                errors.append(
+                    "ESCALATION_TELEGRAM_CHAT_ID is required when ESCALATION_CHANNEL=telegram"
+                )
+            if (
+                self.escalation_telegram_message_thread_id is not None
+                and self.escalation_telegram_message_thread_id < 1
+            ):
+                errors.append(
+                    "ESCALATION_TELEGRAM_MESSAGE_THREAD_ID must be a positive integer when set"
+                )
+        if self.escalation_min_severity not in {"WARNING", "CRITICAL"}:
+            errors.append("ESCALATION_MIN_SEVERITY must be WARNING or CRITICAL")
         if self.health_interval < 10 or self.log_interval < 2:
             errors.append("Intervals are too aggressive; HEALTH_INTERVAL>=10 and LOG_INTERVAL>=2")
         if self.heartbeat_stale_seconds < 60:
             errors.append("HEARTBEAT_STALE_SECONDS must be at least 60")
+        if self.log_format not in {"text", "json"}:
+            errors.append("LOG_FORMAT must be 'text' or 'json'")
         for name, warning, critical in (
             ("CPU", self.cpu_warning, self.cpu_critical),
             ("MEMORY", self.memory_warning, self.memory_critical),

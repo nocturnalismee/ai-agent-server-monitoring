@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -28,6 +29,33 @@ from .notifiers.telegram import TelegramNotifier
 # How often the running agent refreshes its heartbeat timestamp.
 _HEARTBEAT_WRITE_SECONDS = 30.0
 _HEARTBEAT_FINGERPRINT = "agent:heartbeat"
+_SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
+
+
+def _severity_at_least(severity: str, minimum: str) -> bool:
+    return _SEVERITY_RANK.get(severity.upper(), 0) >= _SEVERITY_RANK.get(
+        minimum.upper(), 2
+    )
+
+
+def _build_notifier(cfg, log, metadata=None):
+    """Create the primary notifier plus an optional critical-channel escalation."""
+    if cfg.alert_channel == "email":
+        primary = EmailNotifier(cfg, log, metadata=metadata)
+    else:
+        primary = TelegramNotifier(cfg, log, metadata=metadata)
+
+    escalation = None
+    if cfg.escalation_channel == "telegram":
+        token = cfg.escalation_telegram_bot_token or cfg.telegram_bot_token
+        escalation_cfg = replace(
+            cfg,
+            telegram_bot_token=token,
+            telegram_chat_id=cfg.escalation_telegram_chat_id,
+            telegram_message_thread_id=cfg.escalation_telegram_message_thread_id,
+        )
+        escalation = TelegramNotifier(escalation_cfg, log, metadata=metadata)
+    return primary, escalation
 
 
 def _parse_heartbeat(value: Optional[str]) -> Optional[datetime]:
@@ -66,7 +94,7 @@ def _heartbeat_is_stale(
 
 def _check_heartbeat(cfg: Config) -> int:
     """One-shot watchdog check used by systemd. Alerts when the agent is stale."""
-    log = setup_logging(cfg.log_file, cfg.log_level)
+    log = setup_logging(cfg.log_file, cfg.log_level, cfg.log_format)
     state = StateStore(
         cfg.state_dir,
         cfg.ssh_failure_tracked_ips_max,
@@ -88,10 +116,7 @@ def _check_heartbeat(cfg: Config) -> int:
         return 0
 
     metadata = EnvironmentDetector(log).detect() if cfg.auto_detect_environment else None
-    if cfg.alert_channel == "email":
-        notifier = EmailNotifier(cfg, log, metadata=metadata)
-    else:
-        notifier = TelegramNotifier(cfg, log, metadata=metadata)
+    notifier, escalation = _build_notifier(cfg, log, metadata=metadata)
 
     incident = Incident(
         kind="agent",
@@ -110,7 +135,13 @@ def _check_heartbeat(cfg: Config) -> int:
         },
     )
     external = sanitize_incident(incident)
-    if not notifier.send(external):
+    delivered = notifier.send(external)
+    if escalation is not None and _severity_at_least(
+        incident.severity, cfg.escalation_min_severity
+    ):
+        if escalation.send(external):
+            delivered = True
+    if not delivered:
         print(f"Heartbeat stale ({detail}); failed to send alert.", file=sys.stderr)
         return 1
     state.mark_alert_sent(_HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds)
@@ -122,7 +153,7 @@ class Agent:
     def __init__(self, cfg: Config):
         cfg.validate()
         self.cfg = cfg
-        self.log = setup_logging(cfg.log_file, cfg.log_level)
+        self.log = setup_logging(cfg.log_file, cfg.log_level, cfg.log_format)
 
         # Detect server OS, control panel, web & database stack
         self.env_detector = EnvironmentDetector(self.log)
@@ -150,10 +181,8 @@ class Agent:
         self.kernel = KernelMonitor(cfg, self.state, self.tailer, self.log)
 
         self.ai = AIAnalyzer(cfg, self.log, metadata=self.metadata)
-        self.notifier = (
-            EmailNotifier(cfg, self.log, metadata=self.metadata)
-            if cfg.alert_channel == "email"
-            else TelegramNotifier(cfg, self.log, metadata=self.metadata)
+        self.notifier, self.escalation_notifier = _build_notifier(
+            cfg, self.log, metadata=self.metadata
         )
         self.running = True
 
@@ -214,7 +243,13 @@ class Agent:
             external_incident = sanitize_incident(external_incident)
 
         # A failed delivery must not suppress the next alert.
-        if self.notifier.send(external_incident):
+        delivered = self.notifier.send(external_incident)
+        if self.escalation_notifier is not None and _severity_at_least(
+            incident.severity, self.cfg.escalation_min_severity
+        ):
+            if self.escalation_notifier.send(external_incident):
+                delivered = True
+        if delivered:
             self.state.mark_alert_sent(
                 incident.fingerprint, self.cfg.alert_cooldown_seconds
             )
@@ -332,7 +367,10 @@ def main():
         print("Configuration/startup error: --test-email requires ALERT_CHANNEL=email", file=sys.stderr)
         return 2
     if args.test_notification or args.test_email:
-        return 0 if agent.notifier.send_test() else 1
+        ok = agent.notifier.send_test()
+        if agent.escalation_notifier is not None:
+            ok = agent.escalation_notifier.send_test() and ok
+        return 0 if ok else 1
     if args.once:
         agent.run_once()
         return 0
