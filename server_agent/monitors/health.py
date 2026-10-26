@@ -89,22 +89,24 @@ class HealthMonitor:
                 incidents.append(incident)
 
         cpu_count = max(psutil.cpu_count() or 1, 1)
-        try:
-            load1 = os.getloadavg()[0]
-            normalized = load1 / cpu_count
-            incident = self._metric_incident(
-                "Load-per-CPU",
-                normalized,
-                self.cfg.load_warning_per_cpu,
-                self.cfg.load_critical_per_cpu,
-                "",
-            )
-            if incident:
-                incident.details["load_1m"] = load1
-                incident.details["cpu_count"] = cpu_count
-                incidents.append(incident)
-        except OSError:
-            pass
+        getloadavg = getattr(os, "getloadavg", None)
+        if getloadavg is not None:
+            try:
+                load1 = getloadavg()[0]
+                normalized = load1 / cpu_count
+                incident = self._metric_incident(
+                    "Load-per-CPU",
+                    normalized,
+                    self.cfg.load_warning_per_cpu,
+                    self.cfg.load_critical_per_cpu,
+                    "",
+                )
+                if incident:
+                    incident.details["load_1m"] = load1
+                    incident.details["cpu_count"] = cpu_count
+                    incidents.append(incident)
+            except OSError:
+                pass
 
         for mount in self.cfg.disk_paths:
             try:
