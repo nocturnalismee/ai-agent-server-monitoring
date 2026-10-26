@@ -11,33 +11,61 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
+def _env_str(name: str, default: str = "") -> str:
+    raw = os.getenv(name)
+    if raw is None:
         return default
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
+    cleaned = raw.strip().strip("'\"").strip()
+    return cleaned if cleaned else default
+
+
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    cleaned = raw.strip().strip("'\"").strip().lower()
+    if not cleaned:
+        return default
+    if cleaned in {"1", "true", "yes", "on"}:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if cleaned in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value")
 
 
 def _int(name: str, default: int) -> int:
-    return int(os.getenv(name, str(default)))
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    cleaned = raw.strip().strip("'\"").strip()
+    if not cleaned:
+        return default
+    return int(cleaned)
 
 
 def _float(name: str, default: float) -> float:
-    return float(os.getenv(name, str(default)))
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    cleaned = raw.strip().strip("'\"").strip()
+    if not cleaned:
+        return default
+    return float(cleaned)
 
 
 def _csv(name: str, default: str = "") -> List[str]:
-    return [x.strip() for x in os.getenv(name, default).split(",") if x.strip()]
+    raw = os.getenv(name)
+    val = raw.strip().strip("'\"") if raw is not None else default
+    return [x.strip() for x in val.split(",") if x.strip()]
 
 
 def _optional_int(name: str) -> Optional[int]:
-    value = os.getenv(name, "").strip()
-    return int(value) if value else None
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    cleaned = raw.strip().strip("'\"").strip()
+    return int(cleaned) if cleaned else None
+
 
 
 @dataclass(frozen=True)
@@ -109,12 +137,12 @@ class Config:
     telegram_timeout: int = _int("TELEGRAM_TIMEOUT", 10)
 
     ai_enabled: bool = _bool("AI_ENABLED", _bool("GEMINI_ENABLED", False))
-    ai_provider: str = os.getenv(
-        "AI_PROVIDER", "gemini" if os.getenv("GEMINI_API_KEY") else "deepseek"
-    ).strip().lower()
-    ai_api_key: str = os.getenv("AI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-    ai_model: str = os.getenv("AI_MODEL", os.getenv("GEMINI_MODEL", ""))
-    ai_base_url: str = os.getenv("AI_BASE_URL", "")
+    ai_provider: str = (
+        _env_str("AI_PROVIDER") or ("gemini" if _env_str("GEMINI_API_KEY") else "deepseek")
+    ).lower()
+    ai_api_key: str = _env_str("AI_API_KEY") or _env_str("GEMINI_API_KEY")
+    ai_model: str = _env_str("AI_MODEL") or _env_str("GEMINI_MODEL")
+    ai_base_url: str = _env_str("AI_BASE_URL")
     ai_timeout_seconds: int = _int("AI_TIMEOUT_SECONDS", _int("GEMINI_TIMEOUT_SECONDS", 10))
     ai_max_output_tokens: int = _int("AI_MAX_OUTPUT_TOKENS", _int("GEMINI_MAX_OUTPUT_TOKENS", 400))
     ai_rate_limit_per_minute: int = _int("AI_RATE_LIMIT_PER_MINUTE", _int("GEMINI_RATE_LIMIT_PER_MINUTE", 10))
@@ -256,15 +284,15 @@ class Config:
             "claude", "anthropic", "groq", "openrouter", "custom", "openai_compatible"
         }
         if self.ai_enabled:
-            if self.ai_provider not in allowed_providers:
-                errors.append(f"AI_PROVIDER must be one of: {', '.join(sorted(allowed_providers))}")
+            if self.ai_provider not in allowed_providers and not self.ai_base_url:
+                errors.append(f"AI_PROVIDER must be one of: {', '.join(sorted(allowed_providers))} (or provide AI_BASE_URL for custom providers)")
             if not self.ai_api_key:
                 errors.append("AI_API_KEY is required when AI_ENABLED=true")
             if not 1 <= self.ai_max_output_tokens <= 8192:
                 errors.append("AI_MAX_OUTPUT_TOKENS must be between 1 and 8192")
             if not 1 <= self.ai_rate_limit_per_minute <= 120:
                 errors.append("AI_RATE_LIMIT_PER_MINUTE must be between 1 and 120")
-            if self.ai_provider in {"custom", "openai_compatible"} and not self.ai_base_url:
-                errors.append("AI_BASE_URL is required when AI_PROVIDER=custom or openai_compatible")
+            if (self.ai_provider in {"custom", "openai_compatible"} or self.ai_provider not in allowed_providers) and not self.ai_base_url:
+                errors.append("AI_BASE_URL is required when AI_PROVIDER=custom or using a custom endpoint")
         if errors:
             raise ValueError("; ".join(errors))
