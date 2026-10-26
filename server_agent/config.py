@@ -108,16 +108,77 @@ class Config:
     telegram_message_thread_id: Optional[int] = _optional_int("TELEGRAM_MESSAGE_THREAD_ID")
     telegram_timeout: int = _int("TELEGRAM_TIMEOUT", 10)
 
-    gemini_enabled: bool = _bool("GEMINI_ENABLED", False)
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    gemini_timeout_seconds: int = _int("GEMINI_TIMEOUT_SECONDS", 8)
-    gemini_max_output_tokens: int = _int("GEMINI_MAX_OUTPUT_TOKENS", 400)
-    gemini_rate_limit_per_minute: int = _int("GEMINI_RATE_LIMIT_PER_MINUTE", 10)
+    ai_enabled: bool = _bool("AI_ENABLED", _bool("GEMINI_ENABLED", False))
+    ai_provider: str = os.getenv(
+        "AI_PROVIDER", "gemini" if os.getenv("GEMINI_API_KEY") else "deepseek"
+    ).strip().lower()
+    ai_api_key: str = os.getenv("AI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+    ai_model: str = os.getenv("AI_MODEL", os.getenv("GEMINI_MODEL", ""))
+    ai_base_url: str = os.getenv("AI_BASE_URL", "")
+    ai_timeout_seconds: int = _int("AI_TIMEOUT_SECONDS", _int("GEMINI_TIMEOUT_SECONDS", 10))
+    ai_max_output_tokens: int = _int("AI_MAX_OUTPUT_TOKENS", _int("GEMINI_MAX_OUTPUT_TOKENS", 400))
+    ai_rate_limit_per_minute: int = _int("AI_RATE_LIMIT_PER_MINUTE", _int("GEMINI_RATE_LIMIT_PER_MINUTE", 10))
 
     state_dir: Path = Path(os.getenv("STATE_DIR", "/var/lib/server-ai-agent"))
     log_file: Path = Path(os.getenv("LOG_FILE", "/var/log/server-ai-agent/agent.log"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    def resolved_ai_model(self) -> str:
+        if self.ai_model:
+            return self.ai_model
+        defaults = {
+            "deepseek": "deepseek-chat",
+            "openai": "gpt-4o-mini",
+            "kimi": "moonshot-v1-8k",
+            "moonshot": "moonshot-v1-8k",
+            "groq": "llama-3.3-70b-versatile",
+            "openrouter": "deepseek/deepseek-chat",
+            "claude": "claude-3-5-haiku-20241022",
+            "anthropic": "claude-3-5-haiku-20241022",
+            "gemini": "gemini-1.5-flash",
+        }
+        return defaults.get(self.ai_provider, "deepseek-chat")
+
+    def resolved_ai_base_url(self) -> str:
+        if self.ai_base_url:
+            return self.ai_base_url.rstrip("/")
+        defaults = {
+            "deepseek": "https://api.deepseek.com/v1",
+            "openai": "https://api.openai.com/v1",
+            "kimi": "https://api.moonshot.cn/v1",
+            "moonshot": "https://api.moonshot.cn/v1",
+            "groq": "https://api.groq.com/openai/v1",
+            "openrouter": "https://openrouter.ai/api/v1",
+            "claude": "https://api.anthropic.com/v1",
+            "anthropic": "https://api.anthropic.com/v1",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
+        }
+        return defaults.get(self.ai_provider, "https://api.deepseek.com/v1")
+
+    # Backward compatibility properties for Gemini
+    @property
+    def gemini_enabled(self) -> bool:
+        return self.ai_enabled
+
+    @property
+    def gemini_api_key(self) -> str:
+        return self.ai_api_key
+
+    @property
+    def gemini_model(self) -> str:
+        return self.resolved_ai_model()
+
+    @property
+    def gemini_timeout_seconds(self) -> int:
+        return self.ai_timeout_seconds
+
+    @property
+    def gemini_max_output_tokens(self) -> int:
+        return self.ai_max_output_tokens
+
+    @property
+    def gemini_rate_limit_per_minute(self) -> int:
+        return self.ai_rate_limit_per_minute
 
     def resolved_web_error_logs(self) -> List[str]:
         """Return explicit log paths without discovering arbitrary vhost files."""
@@ -188,15 +249,22 @@ class Config:
                 errors.append("KERNEL_ERROR_LOGS entries must be absolute paths")
         if not 1 <= self.smtp_port <= 65535:
             errors.append("SMTP_PORT must be between 1 and 65535")
-        if self.smtp_timeout < 1 or self.telegram_timeout < 1 or self.gemini_timeout_seconds < 1:
-            errors.append("SMTP_TIMEOUT, TELEGRAM_TIMEOUT, and GEMINI_TIMEOUT_SECONDS must be positive")
-        if self.gemini_enabled and not self.gemini_api_key:
-            errors.append("GEMINI_API_KEY is required when GEMINI_ENABLED=true")
-        if self.gemini_enabled and not re.fullmatch(r"[A-Za-z0-9._-]+", self.gemini_model):
-            errors.append("GEMINI_MODEL contains unsupported characters")
-        if not 1 <= self.gemini_max_output_tokens <= 2048:
-            errors.append("GEMINI_MAX_OUTPUT_TOKENS must be between 1 and 2048")
-        if not 1 <= self.gemini_rate_limit_per_minute <= 120:
-            errors.append("GEMINI_RATE_LIMIT_PER_MINUTE must be between 1 and 120")
+        if self.smtp_timeout < 1 or self.telegram_timeout < 1 or self.ai_timeout_seconds < 1:
+            errors.append("SMTP_TIMEOUT, TELEGRAM_TIMEOUT, and AI_TIMEOUT_SECONDS must be positive")
+        allowed_providers = {
+            "gemini", "openai", "deepseek", "kimi", "moonshot",
+            "claude", "anthropic", "groq", "openrouter", "custom", "openai_compatible"
+        }
+        if self.ai_enabled:
+            if self.ai_provider not in allowed_providers:
+                errors.append(f"AI_PROVIDER must be one of: {', '.join(sorted(allowed_providers))}")
+            if not self.ai_api_key:
+                errors.append("AI_API_KEY is required when AI_ENABLED=true")
+            if not 1 <= self.ai_max_output_tokens <= 8192:
+                errors.append("AI_MAX_OUTPUT_TOKENS must be between 1 and 8192")
+            if not 1 <= self.ai_rate_limit_per_minute <= 120:
+                errors.append("AI_RATE_LIMIT_PER_MINUTE must be between 1 and 120")
+            if self.ai_provider in {"custom", "openai_compatible"} and not self.ai_base_url:
+                errors.append("AI_BASE_URL is required when AI_PROVIDER=custom or openai_compatible")
         if errors:
             raise ValueError("; ".join(errors))

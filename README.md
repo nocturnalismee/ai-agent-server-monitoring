@@ -166,28 +166,38 @@ The bot must be a member of the target chat and permitted to post. A group or
 supergroup chat ID is often negative. `TELEGRAM_MESSAGE_THREAD_ID` is optional
 and only applies to forum-enabled supergroups.
 
-### Optional Gemini AI enrichment
+### Optional AI incident enrichment (Multi-provider)
+
+The agent supports multiple AI providers using Python's standard library HTTPS REST client—no third-party SDKs (`openai`, `google-genai`, `anthropic`) are installed:
+- **DeepSeek** (`AI_PROVIDER=deepseek`): Fast, inexpensive, excellent Linux SRE reasoning, and universally accessible without datacenter geo-blocking.
+- **OpenAI** (`AI_PROVIDER=openai`): Supports `gpt-4o-mini`, etc.
+- **Claude** (`AI_PROVIDER=claude`): Supports `claude-3-5-haiku-20241022`, etc.
+- **Groq** (`AI_PROVIDER=groq`): Ultra-fast inference with free tier (`llama-3.3-70b-versatile`).
+- **Kimi / Moonshot** (`AI_PROVIDER=kimi`): `moonshot-v1-8k`.
+- **Custom / OpenAI-Compatible** (`AI_PROVIDER=custom`): Point `AI_BASE_URL` to any reverse proxy, gateway, or local Ollama instance.
+- **Gemini** (`AI_PROVIDER=gemini`): Google AI Studio (or legacy `GEMINI_*` env variables).
+
+Example for **DeepSeek**:
 
 ```dotenv
-GEMINI_ENABLED=true
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_TIMEOUT_SECONDS=8
-GEMINI_MAX_OUTPUT_TOKENS=400
-GEMINI_RATE_LIMIT_PER_MINUTE=10
+AI_ENABLED=true
+AI_PROVIDER=deepseek
+AI_API_KEY=sk-your-deepseek-api-key
+AI_MODEL=deepseek-chat
 ```
 
-No additional Python package is required: Gemini is called with HTTPS REST via
-the Python standard library. AI is enrichment only; alert delivery continues
-when Gemini is disabled, rate-limited, or unavailable. A 60-second sliding window
-rate limiter (`GEMINI_RATE_LIMIT_PER_MINUTE`) prevents quota exhaustion during
-alert storms.
+Example for **OpenAI**:
 
-Before telemetry leaves the server for Gemini, Telegram, or email, the agent
-redacts common credentials: API keys, tokens, passwords, authorization/cookie
-headers, sensitive URL parameters, database URI passwords, and private keys.
-The original monitored files are never modified. Review initial alerts because
-pattern-based redaction cannot identify every custom secret format.
+```dotenv
+AI_ENABLED=true
+AI_PROVIDER=openai
+AI_API_KEY=sk-your-openai-api-key
+AI_MODEL=gpt-4o-mini
+```
+
+AI is enrichment only; alert delivery continues when AI is disabled, rate-limited, or unavailable. A 60-second sliding window rate limiter (`AI_RATE_LIMIT_PER_MINUTE`, default 10) prevents quota exhaustion during alert storms.
+
+Before telemetry leaves the server for AI, Telegram, or email, the agent redacts common credentials: API keys, tokens, passwords, authorization/cookie headers, sensitive URL parameters, database URI passwords, and private keys. The original monitored files are never modified. Review initial alerts because pattern-based redaction cannot identify every custom secret format.
 
 ### Panel-specific web logs
 
