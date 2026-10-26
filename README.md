@@ -367,14 +367,21 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 python -m pytest -q        # run the test suite
+python -m pytest -q --cov=server_agent --cov-report=term-missing  # coverage (fails below 55%)
 python -m ruff check .     # lint + import order
+pip-audit -r requirements.txt   # audit runtime deps (Python >= 3.10)
 python -m server_agent --check-config
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `ruff check .` and the pytest
-suite on Python 3.9–3.12 for every push to `main` and every pull request. The
-runtime only depends on `psutil` and `python-dotenv`; `pytest` and `ruff` are
-development-only.
+GitHub Actions (`.github/workflows/ci.yml`) runs on Python 3.9–3.12 for every
+push to `main` and every pull request:
+
+- `lint`: `ruff check .`
+- `test`: `pytest` with a 55% coverage gate
+- `security`: `pip-audit -r requirements.txt`
+
+The runtime only depends on `psutil` and `python-dotenv`; `pytest`,
+`pytest-cov`, `ruff`, and `pip-audit` are development-only.
 
 When adding a legacy shim under `server_agent/*.py`, keep intentional
 re-exports explicit and silence them with `# noqa: F401` so lint stays green.

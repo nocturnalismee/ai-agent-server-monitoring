@@ -9,7 +9,7 @@ description = "Read-only Linux health and security monitoring agent"
 requires-python = ">=3.9"
 dependencies = [
     "psutil==7.0.0",
-    "python-dotenv==1.1.1",
+    "python-dotenv==1.2.2",
 ]
 
 [tool.pytest.ini_options]
@@ -24,3 +24,11 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["server_agent"]
+
+[tool.coverage.run]
+source = ["server_agent"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 55
