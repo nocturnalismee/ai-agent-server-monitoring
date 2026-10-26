@@ -1,8 +1,8 @@
 # AI Agent Server Monitoring
 
-A read-only, high-performance Linux health, security, and log monitoring agent for **Ubuntu/Debian**, **AlmaLinux/RHEL**, and **CloudLinux**, with built-in auto-discovery and context awareness for hosting control panels: **cPanel/WHM**, **aaPanel**, **CyberPanel**, **CloudPanel**, **Plesk**, and **DirectAdmin**.
+A read-only, high-performance Linux health, security, and log monitoring agent for **Ubuntu/Debian**, **AlmaLinux/RHEL**, and **CloudLinux**, with built-in auto-discovery and context awareness for hosting control panels: **cPanel/WHM**, **aaPanel**, **CyberPanel**, **CloudPanel**, **Plesk**, **DirectAdmin**, **HestiaCP**, **VestaCP**, and **RunCloud**.
 
-It monitors host health and selected logs, collects real-time diagnostic evidence (`journalctl` / top processes), and sends alerts through **one** chosen channel: **SMTP email** or **Telegram**. High-severity incidents are enriched with multi-provider AI triage (DeepSeek, OpenAI, Claude, Groq, Kimi, or Gemini) using the official HTTPS REST API through Python's standard library—**no third-party AI SDKs are required**.
+It monitors host health and selected logs, collects real-time diagnostic evidence (`journalctl` / top processes), and sends alerts through **one** chosen channel: **SMTP email** or **Telegram**. High-severity incidents are enriched with multi-provider AI triage (DeepSeek, OpenAI, Claude, Groq, Kimi, Gemini, or OpenRouter) using the official HTTPS REST API through Python's standard library—**no third-party AI SDKs are required**.
 
 ---
 
@@ -63,6 +63,16 @@ server_agent/
 
 ---
 
+## Prerequisites
+
+- **Linux with systemd** (Ubuntu/Debian, AlmaLinux/RHEL, CloudLinux, or a supported hosting panel).
+- **Python 3.9 or newer** (the installer sets up a virtual environment; `python3-venv` is installed if needed).
+- **Root or sudo** access for installation and service management.
+- **Read access** to the logs you want to monitor (`auth.log`/`secure`, web server error logs, kernel logs) and to the systemd journal.
+- **Outbound network access** for Telegram (HTTPS) and/or your SMTP relay, plus your AI provider when AI enrichment is enabled.
+
+---
+
 ## 1. Clone from GitHub
 
 Connect to your target server and clone the repository:
@@ -95,7 +105,15 @@ The installer:
 - Creates the non-login `server-agent` system user.
 - Installs the application to `/opt/server-ai-agent`.
 - Generates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600` (preserves existing config on update).
-- Configures systemd service and logrotate.
+- Configures the systemd service, the heartbeat watchdog service/timer, and logrotate.
+
+The service is installed but left stopped until you configure it. After editing
+the environment file, start the agent and enable the watchdog timer:
+
+```bash
+sudo systemctl start server-ai-agent
+sudo systemctl enable --now server-ai-agent-watchdog.timer
+```
 
 ---
 
@@ -234,6 +252,7 @@ Supports multiple providers without installing third-party SDKs:
 - **Groq** (`AI_PROVIDER=groq`): Fast inference (`llama-3.3-70b-versatile`).
 - **Kimi / Moonshot** (`AI_PROVIDER=kimi`): `moonshot-v1-8k`.
 - **Gemini** (`AI_PROVIDER=gemini`): Google Generative Language REST API (`gemini-1.5-flash`).
+- **OpenRouter** (`AI_PROVIDER=openrouter`): Access many models through `AI_BASE_URL=https://openrouter.ai/api/v1` (for example `AI_MODEL=deepseek/deepseek-chat`).
 - **Custom / OpenAI-Compatible** (`AI_PROVIDER=custom`): Set `AI_BASE_URL` to any reverse proxy or local Ollama instance.
 
 Example for **DeepSeek**:
@@ -301,6 +320,17 @@ sudo systemd-run --wait --pipe --collect \
   /opt/server-ai-agent/venv/bin/python -m server_agent --check-heartbeat
 ```
 
+### Running Once via Cron
+
+If you prefer cron or a systemd timer over a long-running daemon, run a single
+cycle with `--once`. It collects and dispatches all incidents, waits for the
+alert worker to drain, and exits. The heartbeat is refreshed each run, so the
+watchdog timer is not needed in this mode.
+
+```bash
+/opt/server-ai-agent/venv/bin/python -m server_agent --once
+```
+
 ---
 
 ## 5. Telegram Alert Format Preview
@@ -346,14 +376,74 @@ To update your server with the latest changes:
 ```bash
 cd /tmp/ai-agent-server-monitoring
 git pull
-sudo cp -a server_agent /opt/server-ai-agent/
+sudo ./install.sh
+```
+
+Re-running the installer refreshes dependencies, systemd units (including the
+watchdog service and timer), and the logrotate policy, while preserving your
+existing environment file. Then restart the service and re-enable the timer:
+
+```bash
 sudo systemctl restart server-ai-agent
+sudo systemctl enable --now server-ai-agent-watchdog.timer
 ```
 
 View live agent logs:
 ```bash
 sudo tail -f /var/log/server-ai-agent/agent.log
 ```
+
+---
+
+## Uninstall
+
+Stop and remove the service, watchdog timer, and installed files:
+
+```bash
+cd /tmp/ai-agent-server-monitoring
+sudo ./uninstall.sh
+```
+
+`uninstall.sh --purge` also removes the state/log directories and the
+`server-agent` system user. Keep a copy of
+`/etc/server-ai-agent/server-ai-agent.env` first if you plan to reinstall.
+
+---
+
+## Troubleshooting
+
+- **Service will not start**: `sudo systemctl status server-ai-agent` and
+  `sudo journalctl -u server-ai-agent -n 100 --no-pager`, then run
+  `sudo -u server-agent /opt/server-ai-agent/venv/bin/python -m server_agent --check-config`.
+- **Logs are unreadable**: grant read access through the distro/panel group
+  policy (for example `adm` or `systemd-journal`) or a reviewed ACL. Do not run
+  the agent as root.
+- **No alerts arrive**: confirm `ALERT_CHANNEL` and credentials, and that the
+  incident is not inside `ALERT_COOLDOWN_SECONDS`. Use `--test-notification` to
+  verify delivery.
+- **SMTP failures**: check host/port and that `SMTP_SECURITY` is `starttls` or
+  `ssl`; many providers require an app-specific password.
+- **Telegram failures**: confirm the bot is a member/admin of the chat and that
+  `TELEGRAM_CHAT_ID` (and the optional topic id) are correct.
+- **Heartbeat stale alert**: the agent has not written a heartbeat within
+  `HEARTBEAT_STALE_SECONDS`; check the service status and logs above.
+
+---
+
+## Security & Privacy
+
+- The agent is **read-only**: it does not change services, firewall rules, or
+  system configuration.
+- It runs as the unprivileged `server-agent` user with systemd hardening
+  (`ProtectSystem=strict`, `NoNewPrivileges`, restricted address families, and
+  a private `/tmp`).
+- Log lines and evidence are **redacted locally** (passwords, tokens, keys,
+  cookies, connection strings) before any alert or AI request leaves the host.
+- When AI enrichment is enabled, only the sanitized incident payload is sent to
+  the configured provider. AI output is advisory and cannot trigger commands.
+- Prompt-injection defenses treat log content as untrusted data; the AI is
+  instructed never to recommend destructive commands.
+- The environment file is created with mode `0600`; keep credentials out of git.
 
 ---
 
@@ -417,9 +507,58 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `AI_ENABLED` | `false` | Enables multi-provider AI triage enrichment. |
 | `AI_PROVIDER` | `deepseek` | Selected AI provider (`deepseek`, `openai`, `claude`, `gemini`, etc.). |
 | `AI_RATE_LIMIT_PER_MINUTE` | `10` | Max AI enrichment requests per minute (sliding window). |
+| `SERVER_NAME` | auto-detected | Stable display name used in alerts and fingerprints. |
+| `ENVIRONMENT` | `production` | Environment label shown in alert headers/footers. |
+| `ALERT_CHANNEL` | `email` | Primary delivery channel: `email` or `telegram`. |
+| `SERVICES` | `nginx,apache2,httpd,ssh,sshd` | Comma-separated services to watch (auto-filtered to installed units). |
+| `CPU_WARNING` | `85` | CPU usage percentage that triggers a warning. |
+| `CPU_CRITICAL` | `95` | CPU usage percentage that triggers a critical alert. |
+| `MEMORY_WARNING` | `85` | Memory usage percentage that triggers a warning. |
+| `MEMORY_CRITICAL` | `95` | Memory usage percentage that triggers a critical alert. |
+| `DISK_WARNING` | `85` | Disk usage percentage that triggers a warning. |
+| `DISK_CRITICAL` | `95` | Disk usage percentage that triggers a critical alert. |
+| `DISK_PATHS` | `/` | Comma-separated mount points to monitor. |
+| `ALERT_ON_MISSING_SERVICE` | `false` | Alert when a watched service is not found/inactive unexpectedly. |
+| `WEB_ERROR_LOGS` | _(unset)_ | Extra absolute web error-log paths (max 12). |
+| `NGINX_ERROR_LOG` | `/var/log/nginx/error.log` | Nginx error log path. |
+| `APACHE_ERROR_LOG` | `/var/log/apache2/error.log` | Debian/Ubuntu Apache error log path. |
+| `APACHE_RHEL_ERROR_LOG` | `/var/log/httpd/error_log` | RHEL-family Apache error log path. |
+| `WEB_ERROR_BATCH_THRESHOLD` | `1` | Minimum matching lines before a web alert fires. |
+| `MAX_LOG_SAMPLE_CHARS` | `600` | Max characters retained per log sample. |
+| `AUTH_LOG` | `/var/log/auth.log` | Debian/Ubuntu SSH auth log path. |
+| `AUTH_LOG_RHEL` | `/var/log/secure` | RHEL-family SSH auth log path. |
+| `SSH_FAILURE_TRACKED_IPS_MAX` | `1000` | Max source IPs tracked for brute-force counting. |
+| `SSH_ALERT_SUCCESS` | `true` | Alert on successful SSH logins (root logins are critical). |
+| `SSH_ALERT_FAILED_BURST` | `true` | Alert when failed logins cross the threshold. |
+| `SSH_ALERT_ROOT_LOGIN` | `true` | Treat root SSH logins as critical. |
+| `TRUSTED_SSH_NETWORKS` | _(unset)_ | Comma-separated CIDRs that downgrade login alerts. |
+| `KERNEL_MONITOR_ENABLED` | `true` | Enable OOM/kernel-crash log monitoring. |
+| `KERNEL_LOG` | `/var/log/kern.log` | Debian/Ubuntu kernel log path. |
+| `KERNEL_LOG_RHEL` | `/var/log/messages` | RHEL-family kernel log path. |
+| `KERNEL_ERROR_LOGS` | _(unset)_ | Extra absolute kernel log paths (max 6). |
+| `KERNEL_JOURNAL_FALLBACK` | `true` | Use `journalctl -k` when no kernel log file exists. |
+| `SMTP_HOST` | _(unset)_ | SMTP relay host. |
+| `SMTP_PORT` | `587` | SMTP relay port. |
+| `SMTP_SECURITY` | `starttls` | SMTP security mode: `starttls` or `ssl`. |
+| `SMTP_USERNAME` | _(unset)_ | SMTP login user (optional). |
+| `SMTP_PASSWORD` | _(unset)_ | SMTP login password (optional). |
+| `SMTP_FROM` | _(unset)_ | From address for alert email. |
+| `SMTP_TO` | _(unset)_ | Comma-separated recipient addresses. |
+| `SMTP_TIMEOUT` | `20` | SMTP connection timeout in seconds. |
+| `TELEGRAM_BOT_TOKEN` | _(unset)_ | Telegram bot token. |
+| `TELEGRAM_CHAT_ID` | _(unset)_ | Target chat/group/supergroup id. |
+| `TELEGRAM_TIMEOUT` | `10` | Telegram API timeout in seconds. |
+| `AI_API_KEY` | _(unset)_ | API key for the selected AI provider. |
+| `AI_MODEL` | provider default | Model override for the selected provider. |
+| `AI_BASE_URL` | provider default | Base URL override (required for `custom`). |
+| `AI_TIMEOUT_SECONDS` | `10` | AI request timeout in seconds. |
+| `AI_MAX_OUTPUT_TOKENS` | `400` | Max output tokens requested from the provider. |
+| `STATE_DIR` | `/var/lib/server-ai-agent` | Directory for persisted cursors, cooldowns, and heartbeat. |
+| `LOG_FILE` | `/var/log/server-ai-agent/agent.log` | Agent log file path. |
+| `LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
 
 ---
 
 ## License
 
-This project is licensed under the Apache 2.0 License.
+This project is licensed under the Apache 2.0 License. See [LICENSE](LICENSE).
