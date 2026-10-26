@@ -4,7 +4,7 @@ import html
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -34,21 +34,40 @@ def _fmt_timestamp(ts: str) -> str:
         return ts
 
 
+def _format_card(items: List[Tuple[str, str]]) -> str:
+    """Format key-value pairs into a clean monospace card with aligned colons."""
+    if not items:
+        return ""
+    max_k = max(len(k) for k, _ in items)
+    lines = [f"{k.ljust(max_k)} : {v}" for k, v in items]
+    return "<pre>" + html.escape("\n".join(lines)) + "</pre>"
+
+
 def _format_ai_text(raw_text: str) -> str:
-    """Format AI output with HTML tags for Telegram.
-    Converts backticked commands `command` into <code>command</code>,
-    and formats shell commands nicely for one-tap copy on mobile.
-    """
+    """Format AI output cleanly with bold section headers and copyable code blocks."""
     if not raw_text:
         return ""
 
     escaped = html.escape(raw_text.strip())
 
-    # Replace `code` with <code>code</code>
+    # Format inline backticks `cmd` -> <code>cmd</code>
     formatted = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
 
-    # Format bold headers like **Header:** -> <b>Header:</b>
+    # Format bold markdown **Header:** -> <b>Header:</b>
     formatted = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", formatted)
+
+    # Format section headers like "Likely cause:", "Immediate checks:", etc. into bold
+    for header in (
+        "Likely cause:",
+        "Immediate checks:",
+        "Immediate checks (read-only):",
+        "Recommended fix:",
+        "Risk:",
+        "Risk Assessment:",
+        "Next step:",
+    ):
+        pattern = rf"(?m)^({re.escape(header)})"
+        formatted = re.sub(pattern, r"<b>\1</b>", formatted)
 
     return formatted
 
@@ -77,37 +96,56 @@ class TelegramNotifier(BaseNotifier):
             "",
         ]
 
-        # ── Server info & OS/Panel badge ─────────────────────────
+        # ── Server info box (aligned card) ───────────────────────
         ts = _fmt_timestamp(incident.timestamp)
-        lines += [
-            f"🖥 <b>{_e(self.cfg.server_name)}</b>  ·  {_e(self.cfg.environment)}  ·  {_e(ts)}",
+        server_card_items = [
+            ("SERVER", self.cfg.server_name),
         ]
-
         if self.metadata and self.metadata.badge():
-            lines += [
-                f"🏷️ <code>{_e(self.metadata.badge())}</code>",
-            ]
-        lines.append("")
+            server_card_items.append(("STACK", self.metadata.badge()))
+        else:
+            server_card_items.append(("PROFILE", self.cfg.environment))
+        server_card_items.append(("TIME", ts))
+
+        lines += [
+            _format_card(server_card_items),
+            "",
+        ]
 
         # ── Summary ───────────────────────────────────────────────
         if incident.summary:
             lines += [
-                f"📋 <b>Summary</b>",
+                "📋 <b>Summary</b>",
                 f"<code>{_e(incident.summary)}</code>",
                 "",
             ]
 
-        # ── Details (key: value pairs) ────────────────────────────
+        # ── Details box (aligned card) ────────────────────────────
         if incident.details:
             detail_items = []
+            raw_log = None
+
             for k, v in incident.details.items():
-                val_str = _e(v) if v not in ("", None) else "—"
-                detail_items.append(f"<b>{_e(k.upper())}</b>: {val_str}")
-            lines += [
-                f"🔍 <b>Details</b>",
-                "  |  ".join(detail_items),
-                "",
-            ]
+                if k.lower() in ("raw_log", "raw log", "log"):
+                    raw_log = str(v)
+                    continue
+                k_name = str(k).upper().replace("_", " ")[:15]
+                v_str = str(v) if v not in ("", None) else "—"
+                detail_items.append((k_name, v_str))
+
+            if detail_items:
+                lines += [
+                    "🔍 <b>Details</b>",
+                    _format_card(detail_items),
+                    "",
+                ]
+
+            if raw_log:
+                lines += [
+                    "📝 <b>Log Record</b>",
+                    f"<code>{_e(raw_log)}</code>",
+                    "",
+                ]
 
         # ── AI Analysis & Troubleshooting ─────────────────────────
         if incident.ai_analysis:
