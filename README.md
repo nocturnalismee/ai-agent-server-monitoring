@@ -371,8 +371,11 @@ sudo journalctl -u server-ai-agent --since "1 hour ago"
 # Disable without uninstalling
 sudo systemctl disable --now server-ai-agent
 
-# Remove the systemd and logrotate files; config, state, and logs remain
+# Remove application and configuration (operational state and logs remain)
 sudo ./uninstall.sh
+
+# Or completely purge everything including state, logs, and system account
+sudo ./uninstall.sh --purge
 ```
 
 Installed locations:
