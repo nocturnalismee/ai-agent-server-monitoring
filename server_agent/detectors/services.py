@@ -59,9 +59,12 @@ class ServiceDetector:
             f"/lib/systemd/system/{unit_name}",
             f"/usr/lib/systemd/system/{unit_name}",
         ):
-            if Path(p).exists():
-                self._installed_cache.add(service)
-                return True
+            try:
+                if Path(p).exists():
+                    self._installed_cache.add(service)
+                    return True
+            except (PermissionError, OSError):
+                pass
 
         # Fallback to systemctl status/cat
         try:

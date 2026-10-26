@@ -4,10 +4,31 @@ import os
 import platform
 import shutil
 import socket
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..core.models import ServerMetadata
+
+
+def _safe_exists(path_str: str) -> bool:
+    try:
+        return os.path.exists(path_str)
+    except (PermissionError, OSError):
+        return False
+
+
+def _safe_is_dir(path_str: str) -> bool:
+    try:
+        return os.path.isdir(path_str)
+    except (PermissionError, OSError):
+        return False
+
+
+def _safe_read_text(path_str: str) -> str:
+    try:
+        with open(path_str, "r", encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except (PermissionError, FileNotFoundError, OSError):
+        return ""
 
 
 class EnvironmentDetector:
@@ -74,14 +95,15 @@ class EnvironmentDetector:
     @staticmethod
     def _detect_os() -> Dict[str, str]:
         info = {"name": platform.system(), "version": "", "family": "linux"}
-        release_files = [Path("/etc/os-release"), Path("/usr/lib/os-release")]
+        release_files = ["/etc/os-release", "/usr/lib/os-release"]
 
         for path in release_files:
-            if not path.exists():
+            content = _safe_read_text(path)
+            if not content:
                 continue
             try:
                 data: Dict[str, str] = {}
-                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                for line in content.splitlines():
                     if "=" in line and not line.strip().startswith("#"):
                         k, v = line.split("=", 1)
                         data[k.strip()] = v.strip().strip('"\'')
@@ -116,62 +138,41 @@ class EnvironmentDetector:
     @staticmethod
     def _detect_panel() -> tuple[str, str]:
         # 1. cPanel / WHM
-        if Path("/usr/local/cpanel").is_dir():
-            ver = ""
-            ver_file = Path("/usr/local/cpanel/version")
-            if ver_file.exists():
-                try:
-                    ver = ver_file.read_text().strip()
-                except Exception:
-                    pass
+        if _safe_is_dir("/usr/local/cpanel"):
+            ver = _safe_read_text("/usr/local/cpanel/version")
             return "cPanel", ver
 
         # 2. CyberPanel
-        if Path("/usr/local/CyberCP").is_dir() or Path("/etc/cyberpanel").is_dir():
-            ver = ""
-            ver_file = Path("/usr/local/CyberCP/version.txt")
-            if ver_file.exists():
-                try:
-                    ver = ver_file.read_text().strip()
-                except Exception:
-                    pass
+        if _safe_is_dir("/usr/local/CyberCP") or _safe_is_dir("/etc/cyberpanel"):
+            ver = _safe_read_text("/usr/local/CyberCP/version.txt")
             return "CyberPanel", ver
 
         # 3. aaPanel / BT-Panel
-        if Path("/www/server/panel").is_dir():
-            ver = ""
-            ver_file = Path("/www/server/panel/class/common.py")
-            if ver_file.exists():
-                ver = "v6.x"
-            return "aaPanel", ver
+        if _safe_is_dir("/www/server/panel"):
+            return "aaPanel", ""
 
         # 4. Plesk
-        if Path("/usr/local/psa").is_dir():
-            ver = ""
-            ver_file = Path("/usr/local/psa/version")
-            if ver_file.exists():
-                try:
-                    ver = ver_file.read_text().strip().split()[0]
-                except Exception:
-                    pass
+        if _safe_is_dir("/usr/local/psa"):
+            raw_ver = _safe_read_text("/usr/local/psa/version")
+            ver = raw_ver.split()[0] if raw_ver else ""
             return "Plesk", ver
 
         # 5. CloudPanel
-        if Path("/usr/local/clp").is_dir() or Path("/home/cloudpanel").is_dir():
+        if _safe_is_dir("/usr/local/clp") or _safe_is_dir("/home/cloudpanel"):
             return "CloudPanel", ""
 
         # 6. HestiaCP / VestaCP
-        if Path("/usr/local/hestia").is_dir():
+        if _safe_is_dir("/usr/local/hestia"):
             return "HestiaCP", ""
-        if Path("/usr/local/vesta").is_dir():
+        if _safe_is_dir("/usr/local/vesta"):
             return "VestaCP", ""
 
         # 7. DirectAdmin
-        if Path("/usr/local/directadmin").is_dir():
+        if _safe_is_dir("/usr/local/directadmin"):
             return "DirectAdmin", ""
 
         # 8. RunCloud
-        if Path("/etc/runcloud").is_dir():
+        if _safe_is_dir("/etc/runcloud"):
             return "RunCloud", ""
 
         return "Standalone", ""
@@ -180,25 +181,25 @@ class EnvironmentDetector:
     def _detect_web_server(panel: str) -> str:
         servers = []
         # OpenLiteSpeed / LiteSpeed
-        if Path("/usr/local/lsws").is_dir() or Path("/usr/local/lsws/bin/lshttpd").exists():
+        if _safe_is_dir("/usr/local/lsws") or _safe_exists("/usr/local/lsws/bin/lshttpd"):
             servers.append("OpenLiteSpeed" if panel == "CyberPanel" else "LiteSpeed")
 
         # Nginx
-        if shutil.which("nginx") or Path("/etc/nginx").is_dir() or Path("/www/server/nginx").is_dir():
+        if shutil.which("nginx") or _safe_is_dir("/etc/nginx") or _safe_is_dir("/www/server/nginx"):
             servers.append("Nginx")
 
         # Apache
         if (
             shutil.which("apache2")
             or shutil.which("httpd")
-            or Path("/etc/apache2").is_dir()
-            or Path("/etc/httpd").is_dir()
-            or Path("/www/server/apache").is_dir()
+            or _safe_is_dir("/etc/apache2")
+            or _safe_is_dir("/etc/httpd")
+            or _safe_is_dir("/www/server/apache")
         ):
             servers.append("Apache")
 
         # Caddy
-        if shutil.which("caddy") or Path("/etc/caddy").is_dir():
+        if shutil.which("caddy") or _safe_is_dir("/etc/caddy"):
             servers.append("Caddy")
 
         return " + ".join(servers) if servers else ""
@@ -210,17 +211,17 @@ class EnvironmentDetector:
         if (
             shutil.which("mariadb")
             or shutil.which("mysql")
-            or Path("/var/lib/mysql").is_dir()
-            or Path("/www/server/data").is_dir()
+            or _safe_is_dir("/var/lib/mysql")
+            or _safe_is_dir("/www/server/data")
         ):
             dbs.append("MySQL/MariaDB")
 
         # PostgreSQL
-        if shutil.which("psql") or Path("/var/lib/postgresql").is_dir():
+        if shutil.which("psql") or _safe_is_dir("/var/lib/postgresql"):
             dbs.append("PostgreSQL")
 
         # Redis
-        if shutil.which("redis-server") or Path("/etc/redis").is_dir():
+        if shutil.which("redis-server") or _safe_is_dir("/etc/redis"):
             dbs.append("Redis")
 
         return " + ".join(dbs) if dbs else ""
@@ -228,13 +229,13 @@ class EnvironmentDetector:
     @staticmethod
     def _detect_firewall() -> str:
         # CSF (ConfigServer Security & Firewall)
-        if Path("/etc/csf/csf.conf").exists():
+        if _safe_exists("/etc/csf/csf.conf"):
             return "CSF"
         # UFW
-        if shutil.which("ufw") and Path("/etc/ufw").is_dir():
+        if shutil.which("ufw") and _safe_is_dir("/etc/ufw"):
             return "UFW"
         # Firewalld
-        if shutil.which("firewall-cmd") and Path("/etc/firewalld").is_dir():
+        if shutil.which("firewall-cmd") and _safe_is_dir("/etc/firewalld"):
             return "firewalld"
         return "iptables"
 
@@ -243,7 +244,7 @@ class EnvironmentDetector:
         features: Dict[str, Any] = {}
         # CloudLinux features
         if "cloudlinux" in os_name.lower():
-            features["cagefs"] = Path("/usr/sbin/cagefsctl").exists()
-            features["lve"] = Path("/proc/lve").exists()
-            features["mysql_governor"] = Path("/usr/bin/dbctl").exists()
+            features["cagefs"] = _safe_exists("/usr/sbin/cagefsctl")
+            features["lve"] = _safe_exists("/proc/lve")
+            features["mysql_governor"] = _safe_exists("/usr/bin/dbctl")
         return features
