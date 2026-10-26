@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import signal
 import sys
+import threading
 import time
 
 from .ai.analyzer import AIAnalyzer
@@ -60,10 +62,43 @@ class Agent:
         )
         self.running = True
 
+        # Alerts (evidence collection, AI triage, delivery) may block on network
+        # I/O. Process them on a single background worker so monitoring cycles
+        # are never stalled. A single worker keeps shared state free of races.
+        self._alert_queue: "queue.Queue[object]" = queue.Queue(maxsize=1000)
+        self._alert_stop = object()
+        self._alert_worker = threading.Thread(
+            target=self._alert_worker_loop,
+            name="alert-worker",
+            daemon=True,
+        )
+        self._alert_worker.start()
+
     def stop(self, *_):
         self.running = False
 
     def dispatch(self, incident):
+        """Queue an incident for asynchronous processing."""
+        try:
+            self._alert_queue.put_nowait(incident)
+        except queue.Full:
+            self.log.warning(
+                "Alert queue full; dropping incident: %s", incident.fingerprint
+            )
+
+    def _alert_worker_loop(self):
+        while True:
+            item = self._alert_queue.get()
+            try:
+                if item is self._alert_stop:
+                    return
+                self._process(item)
+            except Exception:
+                self.log.exception("Alert dispatch error")
+            finally:
+                self._alert_queue.task_done()
+
+    def _process(self, incident):
         # Security logins are intentionally unique per user/IP but still cooldown-protected.
         if not self.state.can_alert(
             incident.fingerprint, self.cfg.alert_cooldown_seconds
@@ -89,6 +124,21 @@ class Agent:
                 incident.fingerprint, self.cfg.alert_cooldown_seconds
             )
 
+    def drain(self):
+        """Block until every queued incident has been processed."""
+        self._alert_queue.join()
+
+    def _shutdown_worker(self, timeout: float = 15.0):
+        """Flush queued alerts, then stop the worker and release resources."""
+        try:
+            self._alert_queue.put(self._alert_stop, timeout=5.0)
+        except queue.Full:
+            self.log.warning("Alert queue full during shutdown; worker not stopped")
+        self._alert_worker.join(timeout=timeout)
+        if self._alert_worker.is_alive():
+            self.log.warning("Alert worker did not stop within %.0fs", timeout)
+        self.ai.close()
+
     def run_once(self):
         for incident in self.health.collect():
             self.dispatch(incident)
@@ -98,6 +148,7 @@ class Agent:
             self.dispatch(incident)
         for incident in self.kernel.collect():
             self.dispatch(incident)
+        self.drain()
 
     def run(self):
         badge = f" [{self.metadata.badge()}]" if self.metadata else ""
@@ -131,7 +182,7 @@ class Agent:
 
             time.sleep(1)
 
-        self.ai.close()
+        self._shutdown_worker()
         self.log.info("Server AI Agent stopped")
 
 

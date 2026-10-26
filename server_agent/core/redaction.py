@@ -22,9 +22,10 @@ _HEADER_SECRET = re.compile(
     r"(?im)^(\s*(?:authorization|cookie|set-cookie|x-api-key|x-auth-token)\s*:\s*)[^\r\n]+"
 )
 _ASSIGNMENT_SECRET = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|"
-    r"passwd|pwd|secret|cookie|private[_-]?key|database[_-]?url|dsn)\s*[:=]\s*)"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    r"((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
+    r"password|passwd|pwd|secret|cookie|private[_-]?key|database[_-]?url|dsn)"
+    r"\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;=&]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
@@ -37,7 +38,12 @@ _PRIVATE_KEY = re.compile(
     re.DOTALL,
 )
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
-_API_TOKEN = re.compile(r"\b(?:ghp|gho|glpat|sk-[a-zA-Z0-9]{15,})[A-Za-z0-9_=-]+\b")
+_API_TOKEN = re.compile(
+    r"\b(?:ghp|gho|ghu|ghs|ghr|glpat)[A-Za-z0-9_=-]+"
+    r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
+)
 
 
 def sanitize_text(value: str) -> Tuple[str, bool]:

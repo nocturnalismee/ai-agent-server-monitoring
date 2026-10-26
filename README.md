@@ -135,6 +135,61 @@ TELEGRAM_CHAT_ID=-1001234567890
 TELEGRAM_MESSAGE_THREAD_ID=
 ```
 
+### Multi-Server Deployment (Telegram Topics)
+
+When running the agent on many servers (VPS, dedicated, or WHM/cPanel shared
+hosting), route every server into **one Telegram supergroup with Topics
+enabled** and give each server its own topic. Each instance posts to its own
+`TELEGRAM_MESSAGE_THREAD_ID`, so alerts stay separated per server. **This needs
+no code changes** — only configuration.
+
+**Setup**
+
+1. Create a Telegram **supergroup** and enable **Topics** in the group settings.
+2. Add your bot to the group. Grant it permission to post messages (making it an
+   admin is the simplest reliable option).
+3. Get the group `chat_id` (a negative id beginning with `-100`, e.g. via
+   `https://api.telegram.org/bot<token>/getUpdates` after posting in the group).
+4. Create one topic per server. Open the topic and read its `message_thread_id`
+   from the topic link (`https://t.me/c/<internal_id>/<thread_id>`) or from the
+   `message_thread_id` field in `getUpdates`.
+5. Configure each server's `/etc/server-ai-agent/server-ai-agent.env` with the
+   shared `TELEGRAM_CHAT_ID` and that server's own thread id.
+
+**Per-server configuration template** (also available at
+[`examples/multi-server.env.example`](examples/multi-server.env.example)):
+
+```dotenv
+# Required
+ALERT_CHANNEL=telegram
+TELEGRAM_BOT_TOKEN=123456789:REPLACE_WITH_BOT_TOKEN
+TELEGRAM_CHAT_ID=-1001234567890
+
+# Unique topic for THIS server
+TELEGRAM_MESSAGE_THREAD_ID=42
+
+# Unique, stable identity shown in every alert (hostname or logical name)
+SERVER_NAME=whm-cust123
+ENVIRONMENT=production
+```
+
+**Operational guidance**
+
+- Keep `SERVER_NAME` unique and stable (e.g. `whm-cust123`, `vps-sg-01`). It is
+  the primary way operators tell servers apart; OS/panel badges are auto-detected
+  and shown alongside it.
+- One bot token can serve the whole fleet. Use a separate bot only when a
+  customer's Telegram access must be isolated.
+- `ALERT_COOLDOWN_SECONDS` (default `900`) suppresses duplicate alerts per
+  fingerprint, so repeated incidents do not flood a topic.
+- `INFO`/`RECOVERY` alerts are delivered with `disable_notification`, so only
+  `WARNING`/`CRITICAL` incidents make sound. Explicit test notifications always
+  sound.
+- Common layouts: one topic per server (recommended), one topic per customer
+  bucket, or one group per customer (different `TELEGRAM_CHAT_ID` per server).
+  Severity-based routing to multiple channels is not supported yet (single
+  channel per instance).
+
 ### SMTP Email
 
 ```dotenv
@@ -269,6 +324,9 @@ sudo tail -f /var/log/server-ai-agent/agent.log
 | `LOG_INTERVAL` | `15` | Log polling interval in seconds. |
 | `MAX_LOG_LINES_PER_CYCLE` | `250` | Maximum lines processed per file per log cycle. |
 | `MAX_LOG_LINE_CHARS` | `4096` | Max characters per physical log line (oversized lines are bounded). |
+| `TELEGRAM_MESSAGE_THREAD_ID` | _(unset)_ | Forum topic id for multi-server deployments (one per server). |
+| `LOAD_WARNING_PER_CPU` | `1.5` | 1-minute load average per CPU that triggers a warning. |
+| `LOAD_CRITICAL_PER_CPU` | `2.5` | 1-minute load average per CPU that triggers a critical alert. |
 | `ALERT_COOLDOWN_SECONDS` | `900` | Cooldown period before repeating an alert with the same fingerprint. |
 | `RECOVERY_ALERTS` | `true` | Sends a recovery notice when a metric/service returns to normal. |
 | `SSH_FAILED_THRESHOLD` | `5` | Failed attempts before triggering an SSH burst alert. |

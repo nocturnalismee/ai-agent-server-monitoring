@@ -30,7 +30,11 @@ class EvidenceCollector:
                 elif metric == "Memory":
                     return self._collect_top_memory_processes()
                 elif "Disk" in metric:
-                    mount = incident.title.replace("Disk ", "").replace(" threshold exceeded", "").strip()
+                    # Prefer the structured metric name (e.g. "Disk /var") over
+                    # parsing the human-readable title.
+                    mount = metric[len("Disk "):].strip() if metric.startswith("Disk ") else ""
+                    if not mount:
+                        mount = incident.title.replace("Disk ", "").replace(" threshold exceeded", "").strip()
                     return self._collect_disk_overview(mount)
 
         except Exception as exc:

@@ -72,6 +72,72 @@ def _format_ai_text(raw_text: str) -> str:
     return formatted
 
 
+# Tags understood by Telegram's HTML parse_mode (used to re-balance on truncation).
+_HTML_TAG_RE = re.compile(r"<(/?)(b|i|code|pre|a|u|s)(?:\s[^>]*)?>", re.IGNORECASE)
+
+
+def _utf16_len(text: str) -> int:
+    """Telegram enforces its 4096 limit in UTF-16 code units, not code points."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _close_open_tags(text: str) -> str:
+    """Return closing tags for any HTML tags still open in ``text``."""
+    stack: List[str] = []
+    for match in _HTML_TAG_RE.finditer(text):
+        closing, name = match.group(1), match.group(2).lower()
+        if closing:
+            if name in stack:
+                while stack:
+                    if stack.pop() == name:
+                        break
+        else:
+            stack.append(name)
+    return "".join(f"</{name}>" for name in reversed(stack))
+
+
+def _truncate_html(text: str, limit: int) -> str:
+    """Truncate ``text`` to ``limit`` UTF-16 units without breaking HTML or emoji.
+
+    Telegram rejects a message outright (HTTP 400) when parse_mode HTML contains
+    unbalanced tags, so the result is always re-balanced before the marker is
+    appended. Surrogate pairs are never split.
+    """
+    if _utf16_len(text) <= limit:
+        return text
+
+    suffix = "\n…<i>[truncated]</i>"
+    budget = limit - _utf16_len(suffix)
+    if budget <= 0:
+        return suffix[-limit:] if limit > 0 else ""
+
+    total = 0
+    cut = len(text)
+    for index, char in enumerate(text):
+        width = 2 if ord(char) > 0xFFFF else 1
+        if total + width > budget:
+            cut = index
+            break
+        total += width
+
+    head = text[:cut]
+    newline = head.rfind("\n")
+    if newline > 0:
+        head = head[:newline]
+
+    def assemble(prefix: str) -> str:
+        # Drop an incomplete tag at the cut boundary before re-balancing.
+        if prefix.rfind("<") > prefix.rfind(">"):
+            prefix = prefix[: prefix.rfind("<")]
+        return prefix + _close_open_tags(prefix) + suffix
+
+    result = assemble(head)
+    while _utf16_len(result) > limit and head:
+        head = head[:-1]
+        result = assemble(head)
+    return result
+
+
 class TelegramNotifier(BaseNotifier):
     """Send structured alerts using Telegram's HTTPS Bot API (HTML mode)."""
 
@@ -160,9 +226,7 @@ class TelegramNotifier(BaseNotifier):
         lines.append(f"<i>{_e(self.cfg.server_name)} · {_e(self.cfg.environment)}</i>")
 
         message = "\n".join(lines)
-        if len(message) > self._MAX_MESSAGE_LENGTH:
-            message = message[: self._MAX_MESSAGE_LENGTH - 32] + "\n…<i>[truncated]</i>"
-        return message
+        return _truncate_html(message, self._MAX_MESSAGE_LENGTH)
 
     def _payload(self, incident: Incident) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -173,6 +237,10 @@ class TelegramNotifier(BaseNotifier):
         }
         if self.cfg.telegram_message_thread_id is not None:
             payload["message_thread_id"] = self.cfg.telegram_message_thread_id
+        # Low-severity notifications should not wake anyone up; explicit tests
+        # are always delivered with sound so the operator can confirm delivery.
+        if incident.severity.upper() in {"INFO", "RECOVERY"} and incident.kind != "test":
+            payload["disable_notification"] = True
         return payload
 
     def send(self, incident: Incident) -> bool:
