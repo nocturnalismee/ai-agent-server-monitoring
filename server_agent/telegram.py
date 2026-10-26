@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -30,9 +30,7 @@ def _fmt_timestamp(ts: str) -> str:
         return ts
 
 
-def _pad(label: str, width: int = 10) -> str:
-    """Right-pad label for monospace alignment inside <pre> blocks."""
-    return label.ljust(width)
+
 
 
 class TelegramNotifier:
@@ -44,54 +42,65 @@ class TelegramNotifier:
         self.cfg = config
         self.logger = logger
 
+    @staticmethod
+    def _short_name(server_name: str) -> str:
+        """Return the first label of the hostname (e.g. 'app' from 'app.domain.id')."""
+        return server_name.split(".")[0] if server_name else server_name
+
     def _message(self, incident) -> str:
         sev = incident.severity.upper()
         emoji = _SEVERITY_EMOJI.get(sev, "⚪")
+        short = self._short_name(self.cfg.server_name)
 
-        # ── Header ────────────────────────────────────────────────
+        # ── Header: emoji + short hostname + severity + title ─────
         lines = [
-            f"{emoji} <b>{_e(sev)}: {_e(incident.title)}</b>",
+            f"{emoji} <b>[{_e(short)}] {_e(sev)}: {_e(incident.title)}</b>",
             "",
         ]
 
-        # ── Server info block (monospace table) ───────────────────
+        # ── Server info (plain formatted lines, no <pre>) ─────────
         ts = _fmt_timestamp(incident.timestamp)
-        info_block = "\n".join([
-            f"{_pad('SERVER')}  {_e(self.cfg.server_name)}",
-            f"{_pad('ENV')}  {_e(self.cfg.environment)}",
-            f"{_pad('TIME')}  {_e(ts)}",
-        ])
-        lines.append(f"<pre>{info_block}</pre>")
+        lines += [
+            f"🖥 <b>{_e(self.cfg.server_name)}</b>  ·  {_e(self.cfg.environment)}  ·  {_e(ts)}",
+            "",
+        ]
 
         # ── Summary ───────────────────────────────────────────────
         if incident.summary:
-            lines.append(f"📋 <b>Summary</b>")
-            lines.append(f"<code>{_e(incident.summary)}</code>")
-            lines.append("")
+            lines += [
+                f"📋 <b>Summary</b>",
+                f"<code>{_e(incident.summary)}</code>",
+                "",
+            ]
 
-        # ── Details block (monospace table) ───────────────────────
+        # ── Details (key: value pairs, no <pre>) ──────────────────
         if incident.details:
-            detail_rows = "\n".join(
-                f"{_pad(k.upper())}  {_e(v) if v not in ('', None) else '—'}"
+            detail_lines = "  |  ".join(
+                f"<b>{_e(k.upper())}</b>: {_e(v) if v not in ('', None) else '—'}"
                 for k, v in incident.details.items()
             )
-            lines.append("🔍 <b>Details</b>")
-            lines.append(f"<pre>{detail_rows}</pre>")
+            lines += [
+                f"🔍 <b>Details</b>",
+                detail_lines,
+                "",
+            ]
 
-        # ── AI Analysis block ─────────────────────────────────────
+        # ── AI Analysis ───────────────────────────────────────────
         if incident.ai_analysis:
-            lines.append("")
-            lines.append("🤖 <b>AI Analysis</b>")
-            lines.append(f"<code>{_e(incident.ai_analysis)}</code>")
+            lines += [
+                "🤖 <b>AI Analysis</b>",
+                f"<code>{_e(incident.ai_analysis)}</code>",
+                "",
+            ]
 
         # ── Footer ────────────────────────────────────────────────
-        lines.append("")
-        lines.append(f"<i>🖥 {_e(self.cfg.server_name)} · {_e(self.cfg.environment)}</i>")
+        lines.append(f"<i>{_e(self.cfg.server_name)} · {_e(self.cfg.environment)}</i>")
 
         message = "\n".join(lines)
         if len(message) > self._MAX_MESSAGE_LENGTH:
             message = message[: self._MAX_MESSAGE_LENGTH - 32] + "\n…<i>[truncated]</i>"
         return message
+
 
     def _payload(self, incident) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
