@@ -89,6 +89,7 @@ class Config:
 
     health_interval: int = _int("HEALTH_INTERVAL", 60)
     log_interval: int = _int("LOG_INTERVAL", 15)
+    heartbeat_stale_seconds: int = _int("HEARTBEAT_STALE_SECONDS", 300)
     max_log_lines_per_cycle: int = _int("MAX_LOG_LINES_PER_CYCLE", 250)
     max_log_line_chars: int = _int("MAX_LOG_LINE_CHARS", 4096)
 
@@ -261,6 +262,8 @@ class Config:
                 errors.append("TELEGRAM_MESSAGE_THREAD_ID must be a positive integer when set")
         if self.health_interval < 10 or self.log_interval < 2:
             errors.append("Intervals are too aggressive; HEALTH_INTERVAL>=10 and LOG_INTERVAL>=2")
+        if self.heartbeat_stale_seconds < 60:
+            errors.append("HEARTBEAT_STALE_SECONDS must be at least 60")
         for name, warning, critical in (
             ("CPU", self.cpu_warning, self.cpu_critical),
             ("MEMORY", self.memory_warning, self.memory_critical),

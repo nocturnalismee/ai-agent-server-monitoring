@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -40,6 +41,8 @@ class StateStore:
             for key in empty:
                 if not isinstance(data.get(key), dict):
                     data[key] = {}
+            if not isinstance(data.get("heartbeat"), str):
+                data["heartbeat"] = None
             return data
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return empty
@@ -140,6 +143,18 @@ class StateStore:
             failures = self.data.setdefault("ssh_failures", {})
             if ip in failures:
                 failures.pop(ip)
+                self.save()
+
+    def heartbeat(self) -> Optional[str]:
+        with self.lock:
+            value = self.data.get("heartbeat")
+            return value if isinstance(value, str) else None
+
+    def set_heartbeat(self, timestamp: Optional[str] = None) -> None:
+        with self.lock:
+            value = timestamp or datetime.now(timezone.utc).isoformat()
+            if self.data.get("heartbeat") != value:
+                self.data["heartbeat"] = value
                 self.save()
 
 

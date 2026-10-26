@@ -1,0 +1,30 @@
+[Unit]
+Description=Server AI Agent heartbeat watchdog
+Documentation=https://github.com/nocturnalismee/ai-agent-server-monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=server-agent
+Group=server-agent
+SupplementaryGroups=adm systemd-journal
+EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env
+WorkingDirectory=/opt/server-ai-agent
+ExecStart=/opt/server-ai-agent/venv/bin/python -m server_agent --check-heartbeat
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectHostname=true
+ProtectClock=true
+ReadWritePaths=/var/lib/server-ai-agent /var/log/server-ai-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Nice=10

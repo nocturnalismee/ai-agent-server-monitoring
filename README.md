@@ -256,6 +256,30 @@ sudo systemd-run --wait --pipe --collect \
   /opt/server-ai-agent/venv/bin/python -m server_agent --test-notification
 ```
 
+### Heartbeat Watchdog
+
+The agent refreshes a heartbeat in `state.json` every 30 seconds. `install.sh`
+installs and enables `server-ai-agent-watchdog.timer`, which runs
+`--check-heartbeat` every 2 minutes:
+
+```bash
+sudo systemctl enable --now server-ai-agent-watchdog.timer
+sudo systemctl list-timers server-ai-agent-watchdog.timer
+```
+
+If the heartbeat is older than `HEARTBEAT_STALE_SECONDS` (default `300`), the
+watchdog sends one CRITICAL alert (subject to `ALERT_COOLDOWN_SECONDS`) and
+exits. This ensures a crashed or hung agent cannot fail silently. Run the check
+manually with:
+
+```bash
+sudo systemd-run --wait --pipe --collect \
+  -p WorkingDirectory=/opt/server-ai-agent \
+  -p User=server-agent -p Group=server-agent \
+  -p EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env \
+  /opt/server-ai-agent/venv/bin/python -m server_agent --check-heartbeat
+```
+
 ---
 
 ## 5. Telegram Alert Format Preview
@@ -346,6 +370,7 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `EVIDENCE_LINES` | `15` | Number of lines captured for incident evidence. |
 | `HEALTH_INTERVAL` | `60` | Health check interval in seconds. |
 | `LOG_INTERVAL` | `15` | Log polling interval in seconds. |
+| `HEARTBEAT_STALE_SECONDS` | `300` | Alert if the agent heartbeat is older than this (watchdog timer). |
 | `MAX_LOG_LINES_PER_CYCLE` | `250` | Maximum lines processed per file per log cycle. |
 | `MAX_LOG_LINE_CHARS` | `4096` | Max characters per physical log line (oversized lines are bounded). |
 | `TELEGRAM_MESSAGE_THREAD_ID` | _(unset)_ | Forum topic id for multi-server deployments (one per server). |

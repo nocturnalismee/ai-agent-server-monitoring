@@ -22,3 +22,14 @@ def test_journal_cursor_persistence(tmp_path):
     # Reload from disk
     reloaded = StateStore(tmp_path)
     assert reloaded.journal_cursor("kernel") == "s=123456789;i=abc"
+
+
+def test_heartbeat_roundtrip_and_persistence(tmp_path):
+    state = StateStore(tmp_path)
+    assert state.heartbeat() is None
+
+    state.set_heartbeat("2026-10-26T12:00:00+00:00")
+    assert state.heartbeat() == "2026-10-26T12:00:00+00:00"
+
+    reloaded = StateStore(tmp_path)
+    assert reloaded.heartbeat() == "2026-10-26T12:00:00+00:00"

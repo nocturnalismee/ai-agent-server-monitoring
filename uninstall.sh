@@ -10,11 +10,14 @@ if [[ "${1:-}" == "--purge" || "${1:-}" == "-f" ]]; then
   PURGE=true
 fi
 
-echo "Stopping and disabling server-ai-agent service..."
+echo "Stopping and disabling server-ai-agent service and watchdog..."
 systemctl disable --now server-ai-agent 2>/dev/null || true
+systemctl disable --now server-ai-agent-watchdog.timer 2>/dev/null || true
 
-echo "Removing systemd service and logrotate..."
+echo "Removing systemd units and logrotate..."
 rm -f /etc/systemd/system/server-ai-agent.service
+rm -f /etc/systemd/system/server-ai-agent-watchdog.service
+rm -f /etc/systemd/system/server-ai-agent-watchdog.timer
 rm -f /etc/logrotate.d/server-ai-agent
 systemctl daemon-reload
 

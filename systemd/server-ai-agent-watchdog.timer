@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Server AI Agent heartbeat watchdog every 2 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=server-ai-agent-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -6,12 +6,15 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from typing import Optional
 
 from .ai.analyzer import AIAnalyzer
 from .collectors.evidence import EvidenceCollector
 from .collectors.filetail import FileTailer
 from .core.config import Config
 from .core.logging_setup import setup_logging
+from .core.models import Incident
 from .core.redaction import sanitize_incident
 from .core.state import StateStore
 from .detectors.environment import EnvironmentDetector
@@ -21,6 +24,98 @@ from .monitors.ssh import SSHMonitor
 from .monitors.web import WebLogMonitor
 from .notifiers.emailer import EmailNotifier
 from .notifiers.telegram import TelegramNotifier
+
+# How often the running agent refreshes its heartbeat timestamp.
+_HEARTBEAT_WRITE_SECONDS = 30.0
+_HEARTBEAT_FINGERPRINT = "agent:heartbeat"
+
+
+def _parse_heartbeat(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _heartbeat_age_seconds(
+    value: Optional[str], now: Optional[datetime] = None
+) -> Optional[float]:
+    """Return the heartbeat age in seconds, or None when absent/unparseable."""
+    parsed = _parse_heartbeat(value)
+    if parsed is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - parsed).total_seconds()
+
+
+def _heartbeat_is_stale(
+    value: Optional[str], stale_seconds: int, now: Optional[datetime] = None
+) -> bool:
+    age = _heartbeat_age_seconds(value, now)
+    if age is None:
+        return True
+    return age > stale_seconds
+
+
+def _check_heartbeat(cfg: Config) -> int:
+    """One-shot watchdog check used by systemd. Alerts when the agent is stale."""
+    log = setup_logging(cfg.log_file, cfg.log_level)
+    state = StateStore(
+        cfg.state_dir,
+        cfg.ssh_failure_tracked_ips_max,
+        cfg.ssh_failed_threshold,
+    )
+    heartbeat = state.heartbeat()
+    age = _heartbeat_age_seconds(heartbeat)
+    if age is not None and age <= cfg.heartbeat_stale_seconds:
+        print(f"Heartbeat OK ({age:.0f}s old).")
+        return 0
+
+    detail = (
+        "missing"
+        if age is None
+        else f"{age:.0f}s old (limit {cfg.heartbeat_stale_seconds}s)"
+    )
+    if not state.can_alert(_HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds):
+        print(f"Heartbeat stale ({detail}); alert already sent recently.")
+        return 0
+
+    metadata = EnvironmentDetector(log).detect() if cfg.auto_detect_environment else None
+    if cfg.alert_channel == "email":
+        notifier = EmailNotifier(cfg, log, metadata=metadata)
+    else:
+        notifier = TelegramNotifier(cfg, log, metadata=metadata)
+
+    incident = Incident(
+        kind="agent",
+        severity="CRITICAL",
+        title="Monitoring agent heartbeat is stale",
+        summary=(
+            f"The monitoring agent on {cfg.server_name} has not updated its heartbeat "
+            f"recently ({detail}). It may have crashed or hung. Check "
+            "`systemctl status server-ai-agent` and recent agent logs."
+        ),
+        fingerprint=_HEARTBEAT_FINGERPRINT,
+        details={
+            "heartbeat": heartbeat or "missing",
+            "age_seconds": f"{age:.0f}" if age is not None else "unknown",
+            "stale_limit_seconds": cfg.heartbeat_stale_seconds,
+        },
+    )
+    external = sanitize_incident(incident)
+    if not notifier.send(external):
+        print(f"Heartbeat stale ({detail}); failed to send alert.", file=sys.stderr)
+        return 1
+    state.mark_alert_sent(_HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds)
+    print(f"Heartbeat stale ({detail}); alert sent.")
+    return 0
 
 
 class Agent:
@@ -140,6 +235,10 @@ class Agent:
         self.ai.close()
 
     def run_once(self):
+        try:
+            self.state.set_heartbeat()
+        except Exception:
+            self.log.exception("Failed to update heartbeat")
         for incident in self.health.collect():
             self.dispatch(incident)
         for incident in self.web.collect():
@@ -160,9 +259,20 @@ class Agent:
         )
         last_health = 0.0
         last_logs = 0.0
+        try:
+            self.state.set_heartbeat()
+        except Exception:
+            self.log.exception("Failed to update heartbeat")
+        last_heartbeat = time.monotonic()
 
         while self.running:
             now = time.monotonic()
+            if now - last_heartbeat >= _HEARTBEAT_WRITE_SECONDS:
+                try:
+                    self.state.set_heartbeat()
+                    last_heartbeat = now
+                except Exception:
+                    self.log.exception("Failed to update heartbeat")
             try:
                 if now - last_health >= self.cfg.health_interval:
                     for incident in self.health.collect():
@@ -192,6 +302,7 @@ def main():
     parser.add_argument("--test-notification", action="store_true", help="Send a test alert through the selected channel and exit")
     parser.add_argument("--test-email", action="store_true", help="Deprecated alias for --test-notification when email is selected")
     parser.add_argument("--check-config", action="store_true", help="Validate config and exit")
+    parser.add_argument("--check-heartbeat", action="store_true", help="Run the heartbeat watchdog and exit")
     args = parser.parse_args()
 
     try:
@@ -204,6 +315,13 @@ def main():
     if args.check_config:
         print("Configuration OK")
         return 0
+
+    if args.check_heartbeat:
+        try:
+            return _check_heartbeat(cfg)
+        except Exception as exc:
+            print(f"Heartbeat check error: {exc}", file=sys.stderr)
+            return 2
 
     try:
         agent = Agent(cfg)

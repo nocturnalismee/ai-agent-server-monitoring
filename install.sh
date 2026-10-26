@@ -178,10 +178,14 @@ configure_log_groups() {
 
 install_unit() {
   install -m 0644 systemd/server-ai-agent.service /etc/systemd/system/server-ai-agent.service
+  install -m 0644 systemd/server-ai-agent-watchdog.service /etc/systemd/system/server-ai-agent-watchdog.service
+  install -m 0644 systemd/server-ai-agent-watchdog.timer /etc/systemd/system/server-ai-agent-watchdog.timer
   if [[ ${#SERVICE_GROUPS[@]} -eq 0 ]]; then
     sed -i '/^SupplementaryGroups=/d' /etc/systemd/system/server-ai-agent.service
+    sed -i '/^SupplementaryGroups=/d' /etc/systemd/system/server-ai-agent-watchdog.service
   else
     sed -i "s/^SupplementaryGroups=.*/SupplementaryGroups=${SERVICE_GROUPS[*]}/" /etc/systemd/system/server-ai-agent.service
+    sed -i "s/^SupplementaryGroups=.*/SupplementaryGroups=${SERVICE_GROUPS[*]}/" /etc/systemd/system/server-ai-agent-watchdog.service
   fi
 }
 
@@ -265,6 +269,7 @@ main() {
   install -m 0644 logrotate/server-ai-agent /etc/logrotate.d/server-ai-agent
   systemctl daemon-reload
   systemctl enable server-ai-agent
+  systemctl enable server-ai-agent-watchdog.timer
   check_log_access
 
   echo
