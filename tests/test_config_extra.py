@@ -370,3 +370,35 @@ def test_resolved_kernel_logs_falls_back_to_standard_paths():
         kernel_log_rhel="",
     )
     assert cfg.resolved_kernel_logs() == ["/kern.log"]
+
+
+def _cfg(**overrides):
+    return replace(_valid_config(), **overrides)
+
+
+def test_service_profile_accepts_known_profiles():
+    for name in ("auto", "none", "cpanel", "runcloud"):
+        _cfg(service_profile=name).validate()
+
+
+def test_service_profile_rejects_unknown():
+    with pytest.raises(ValueError, match="SERVICE_PROFILE"):
+        _cfg(service_profile="bogus").validate()
+
+
+def test_service_failure_threshold_bounds():
+    for value in (1, 2, 10):
+        _cfg(service_failure_threshold=value).validate()
+    for value in (0, 11):
+        with pytest.raises(ValueError, match="SERVICE_FAILURE_THRESHOLD"):
+            _cfg(service_failure_threshold=value).validate()
+
+
+def test_required_and_optional_overlap_is_rejected():
+    with pytest.raises(ValueError, match="both required and optional"):
+        _cfg(services_required=["nginx"], services_optional=["nginx"]).validate()
+
+
+def test_invalid_service_unit_name_is_rejected():
+    with pytest.raises(ValueError, match="invalid systemd unit name"):
+        _cfg(services_required=["nginx; rm -rf /"]).validate()

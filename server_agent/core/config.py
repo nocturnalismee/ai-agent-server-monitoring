@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
 
+from ..detectors.service_profiles import PROFILE_NAMES
+
 load_dotenv()
+
+_SERVICE_UNIT_RE = re.compile(r"^[a-zA-Z0-9_@.:-]+$")
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -109,6 +114,10 @@ class Config:
         default_factory=lambda: _csv("SERVICES", "nginx,apache2,httpd,ssh,sshd")
     )
     alert_on_missing_service: bool = _bool("ALERT_ON_MISSING_SERVICE", False)
+    service_profile: str = os.getenv("SERVICE_PROFILE", "auto").strip().lower()
+    services_required: List[str] = field(default_factory=lambda: _csv("SERVICES_REQUIRED"))
+    services_optional: List[str] = field(default_factory=lambda: _csv("SERVICES_OPTIONAL"))
+    service_failure_threshold: int = _int("SERVICE_FAILURE_THRESHOLD", 2)
 
     nginx_error_log: str = os.getenv("NGINX_ERROR_LOG", "/var/log/nginx/error.log")
     apache_error_log: str = os.getenv("APACHE_ERROR_LOG", "/var/log/apache2/error.log")
@@ -319,6 +328,28 @@ class Config:
             errors.append("MAX_LOG_SAMPLE_CHARS must be between 100 and 4096")
         if not 1 <= self.ssh_failure_tracked_ips_max <= 100000:
             errors.append("SSH_FAILURE_TRACKED_IPS_MAX must be between 1 and 100000")
+        if self.service_profile not in PROFILE_NAMES:
+            errors.append(
+                "SERVICE_PROFILE must be one of: " + ", ".join(sorted(PROFILE_NAMES))
+            )
+        if not 1 <= self.service_failure_threshold <= 10:
+            errors.append("SERVICE_FAILURE_THRESHOLD must be between 1 and 10")
+        required_names = {name.strip() for name in self.services_required if name.strip()}
+        optional_names = {name.strip() for name in self.services_optional if name.strip()}
+        overlap = sorted(required_names & optional_names)
+        if overlap:
+            errors.append(
+                "Services cannot be both required and optional: " + ", ".join(overlap)
+            )
+        for label, values in (
+            ("SERVICES", self.services),
+            ("SERVICES_REQUIRED", self.services_required),
+            ("SERVICES_OPTIONAL", self.services_optional),
+        ):
+            for value in values:
+                name = value.strip()
+                if name and not _SERVICE_UNIT_RE.match(name):
+                    errors.append(f"{label} contains an invalid systemd unit name: {value}")
         web_logs = self.resolved_web_error_logs()
         if len(web_logs) > 12:
             errors.append("WEB_ERROR_LOGS supports at most 12 explicit paths")
