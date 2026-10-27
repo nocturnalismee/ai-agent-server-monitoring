@@ -156,7 +156,10 @@ set_env_value() {
 
 write_platform_defaults() {
   local env_file=$1
-  set_env_value SERVICES "$DEFAULT_SERVICES" "$env_file"
+  set_env_value SERVICE_PROFILE "auto" "$env_file"
+  if ! grep -q '^# Legacy override' "$env_file" 2>/dev/null; then
+    printf '\n# Legacy override (optional, takes precedence over the profile):\n# SERVICES=nginx,mysql\n' >> "$env_file"
+  fi
   set_env_value WEB_ERROR_LOGS "$WEB_ERROR_LOGS" "$env_file"
   set_env_value AUTH_LOG "$AUTH_LOG_PRIMARY" "$env_file"
   set_env_value AUTH_LOG_RHEL "$AUTH_LOG_SECONDARY" "$env_file"
@@ -211,8 +214,10 @@ print_profile() {
   load_os_release
   detect_profile
   resolve_default_services
-  printf 'profile=%s\nos_id=%s\nos_like=%s\nweb_error_logs=%s\nauth_log=%s\nkernel_log=%s\nservices=%s\n' \
-    "$PLATFORM_PROFILE" "$OS_ID" "$OS_LIKE" "$WEB_ERROR_LOGS" "$AUTH_LOG_PRIMARY" "$KERNEL_LOG_PRIMARY" "$DEFAULT_SERVICES"
+  printf 'profile=%s\nos_id=%s\nos_like=%s\nweb_error_logs=%s\nauth_log=%s\nkernel_log=%s\n' \
+    "$PLATFORM_PROFILE" "$OS_ID" "$OS_LIKE" "$WEB_ERROR_LOGS" "$AUTH_LOG_PRIMARY" "$KERNEL_LOG_PRIMARY"
+  echo "service profile: auto (per-panel at runtime)"
+  echo "service candidates : $DEFAULT_SERVICES"
 }
 
 main() {

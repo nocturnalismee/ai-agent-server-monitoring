@@ -376,6 +376,16 @@ def _cfg(**overrides):
     return replace(_valid_config(), **overrides)
 
 
+def test_services_defaults_to_empty_without_legacy_env(monkeypatch):
+    monkeypatch.delenv("SERVICES", raising=False)
+    assert Config().services == []
+
+
+def test_services_env_still_parses_legacy_override(monkeypatch):
+    monkeypatch.setenv("SERVICES", "nginx,mysql")
+    assert Config().services == ["nginx", "mysql"]
+
+
 def test_service_profile_accepts_known_profiles():
     for name in ("auto", "none", "cpanel", "runcloud"):
         _cfg(service_profile=name).validate()

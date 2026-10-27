@@ -110,9 +110,7 @@ class Config:
     disk_paths: List[str] = field(
         default_factory=lambda: os.getenv("DISK_PATHS", "/").split()
     )
-    services: List[str] = field(
-        default_factory=lambda: _csv("SERVICES", "nginx,apache2,httpd,ssh,sshd")
-    )
+    services: List[str] = field(default_factory=lambda: _csv("SERVICES"))
     alert_on_missing_service: bool = _bool("ALERT_ON_MISSING_SERVICE", False)
     service_profile: str = os.getenv("SERVICE_PROFILE", "auto").strip().lower()
     services_required: List[str] = field(default_factory=lambda: _csv("SERVICES_REQUIRED"))
