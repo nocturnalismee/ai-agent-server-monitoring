@@ -135,7 +135,7 @@ ENVIRONMENT=production
 # Auto-detect OS distro (CloudLinux, Alma, Ubuntu) & Control Panel (cPanel, aaPanel, CyberPanel, etc.)
 AUTO_DETECT_ENVIRONMENT=true
 
-# Auto-discover installed services to eliminate false alerts for services not installed
+# Filter a legacy SERVICES list to installed units (profiles handle panel detection)
 AUTO_DETECT_SERVICES=true
 
 # Capture real-time evidence (journalctl -u <service> or top CPU/RAM processes) when incidents occur
@@ -228,6 +228,73 @@ Leave `ESCALATION_TELEGRAM_BOT_TOKEN` empty to reuse `TELEGRAM_BOT_TOKEN`. The
 same per-fingerprint cooldown applies to both channels, so a CRITICAL alert is
 not repeated every cycle. `--test-notification` sends a test to both the primary
 and escalation destinations.
+
+### Service Monitoring
+
+The agent watches a per-panel set of systemd services. The default
+`SERVICE_PROFILE=auto` follows the detected control panel and falls back to
+`standalone` when no panel is recognized. `SERVICE_PROFILE=none` disables the
+built-in lists; use it with explicit `SERVICES_REQUIRED`/`SERVICES_OPTIONAL`
+overrides.
+
+| Profile | Required (alert if missing/inactive) | Optional (alert if installed but inactive) |
+| :--- | :--- | :--- |
+| standalone | ssh | nginx, apache2, httpd, mysql, redis, docker |
+| cpanel | cpanel, mysql, exim, dovecot | named, httpd, lsws, cphulkd, pure-ftpd, clamd, spamd, redis, php-fpm |
+| cyberpanel | lscpd, lsws, mariadb | postfix, pure-ftpd, dovecot, powerdns, redis, php-fpm |
+| aapanel | bt, mysql | nginx, httpd, apache2, php-fpm, redis, pure-ftpd, postgresql |
+| plesk | sw-cp-server, sw-engine, psa | nginx, apache2, httpd, postfix, dovecot, mysql, redis, php-fpm |
+| directadmin | directadmin | httpd, nginx, apache2, exim, dovecot, mysql, php-fpm, redis |
+| hestiacp | hestia | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
+| cloudpanel | clp-nginx, clp-php-fpm | mysql, redis |
+| runcloud | nginx | php-fpm, mysql, redis |
+
+`php-fpm` in a profile matches only the unversioned unit; versioned units such as
+`php8.2-fpm` are not inferred. List them explicitly if you monitor them.
+
+Override precedence (highest first):
+
+1. `SERVICES` (legacy) — when non-empty, replaces both lists and keeps
+   `AUTO_DETECT_SERVICES` filtering. It is empty by default.
+2. `SERVICES_REQUIRED` — when non-empty, replaces the profile's required list.
+3. `SERVICES_OPTIONAL` — when non-empty, replaces the profile's optional list.
+4. `SERVICE_PROFILE` — supplies any list not overridden; `auto` follows the
+   detected panel.
+
+Common aliases are resolved automatically: `ssh`/`sshd`,
+`apache2`/`httpd`/`apache`, `mysql`/`mariadb`/`mysqld`, `exim`/`exim4`,
+`named`/`bind9`/`named-chroot`.
+
+Severity and timing:
+
+- A required service that is missing (`not-found`) alerts `CRITICAL`; a missing
+  optional service is skipped.
+- A required service whose state is unknown alerts `WARNING`; an optional
+  service is skipped unless `ALERT_ON_MISSING_SERVICE=true`.
+- A `failed` unit alerts immediately: `CRITICAL` when required, `WARNING` when
+  optional.
+- Other non-active states alert after `SERVICE_FAILURE_THRESHOLD` consecutive
+  non-active checks (default `2`).
+- Recovery notices are `INFO` when `RECOVERY_ALERTS=true`.
+
+Incident evidence uses the resolved unit: read-only `journalctl -u <unit>` and
+`systemctl status --no-pager -l -- <unit>`.
+
+To print the effective service plan, run:
+
+```bash
+sudo -u server-agent /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
+```
+
+After `Configuration OK`, the output shows the resolved profile (mode `auto` for
+`SERVICE_PROFILE=auto`, otherwise `explicit`) and both lists:
+
+```text
+Configuration OK
+Service profile: cpanel (auto)
+Required: cpanel, mysql, exim, dovecot
+Optional: named, httpd, lsws, cphulkd, pure-ftpd, clamd, spamd, redis, php-fpm
+```
 
 ### SMTP Email
 
@@ -427,6 +494,21 @@ sudo ./uninstall.sh
   `TELEGRAM_CHAT_ID` (and the optional topic id) are correct.
 - **Heartbeat stale alert**: the agent has not written a heartbeat within
   `HEARTBEAT_STALE_SECONDS`; check the service status and logs above.
+- **Required service alerting on a service you do not run**: set
+  `SERVICES_REQUIRED` to the exact required list you want (it replaces the
+  profile's required list), and set `SERVICES_OPTIONAL` if needed. Alternatively,
+  set `SERVICE_PROFILE=none` and list both lists explicitly. Adding a name only
+  to `SERVICES_OPTIONAL` does not remove it from the profile's required list.
+- **Optional service you do not want monitored**: set `SERVICES_OPTIONAL` to the
+  exact optional list you want (it replaces the profile's optional list), or use
+  `SERVICE_PROFILE=none` with explicit lists. Required services remain required.
+- **Flapping or noisy service alerts**: raise `SERVICE_FAILURE_THRESHOLD` (1-10)
+  so a service must stay non-active for more consecutive checks; `failed` units
+  still alert immediately. `RECOVERY_ALERTS=false` suppresses recovery notices,
+  and `ALERT_COOLDOWN_SECONDS` limits repeat delivery.
+- **Verify the effective service plan**: run `--check-config` as shown above and
+  inspect the `Service profile`, `Required`, and `Optional` lines, which reflect
+  panel auto-detection and all overrides.
 
 ---
 
@@ -483,7 +565,7 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | Setting | Default | Purpose |
 | :--- | :---: | :--- |
 | `AUTO_DETECT_ENVIRONMENT` | `true` | Auto-detects OS distro and hosting control panel. |
-| `AUTO_DETECT_SERVICES` | `true` | Filters watch list to include only installed services. |
+| `AUTO_DETECT_SERVICES` | `true` | Filters a non-empty legacy `SERVICES` list to installed units. |
 | `COLLECT_INCIDENT_EVIDENCE` | `true` | Captures `journalctl` or top process snapshots before AI triage. |
 | `EVIDENCE_LINES` | `15` | Number of lines captured for incident evidence. |
 | `HEALTH_INTERVAL` | `60` | Health check interval in seconds. |
@@ -510,7 +592,11 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `SERVER_NAME` | auto-detected | Stable display name used in alerts and fingerprints. |
 | `ENVIRONMENT` | `production` | Environment label shown in alert headers/footers. |
 | `ALERT_CHANNEL` | `email` | Primary delivery channel: `email` or `telegram`. |
-| `SERVICES` | `nginx,apache2,httpd,ssh,sshd` | Comma-separated services to watch (auto-filtered to installed units). |
+| `SERVICES` | _(unset)_ | Legacy comma-separated watch list; when set, replaces the profile and is auto-filtered to installed units. |
+| `SERVICE_PROFILE` | `auto` | Per-panel service profile: `auto`, `none`, or a panel name. |
+| `SERVICES_REQUIRED` | _(unset)_ | Overrides the profile's required service list. |
+| `SERVICES_OPTIONAL` | _(unset)_ | Overrides the profile's optional service list. |
+| `SERVICE_FAILURE_THRESHOLD` | `2` | Consecutive non-active checks before alerting (`failed` alerts immediately). |
 | `CPU_WARNING` | `85` | CPU usage percentage that triggers a warning. |
 | `CPU_CRITICAL` | `95` | CPU usage percentage that triggers a critical alert. |
 | `MEMORY_WARNING` | `85` | Memory usage percentage that triggers a warning. |
@@ -518,7 +604,7 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `DISK_WARNING` | `85` | Disk usage percentage that triggers a warning. |
 | `DISK_CRITICAL` | `95` | Disk usage percentage that triggers a critical alert. |
 | `DISK_PATHS` | `/` | Comma-separated mount points to monitor. |
-| `ALERT_ON_MISSING_SERVICE` | `false` | Alert when a watched service is not found/inactive unexpectedly. |
+| `ALERT_ON_MISSING_SERVICE` | `false` | Alert (`WARNING`) when an optional service's state is unknown. |
 | `WEB_ERROR_LOGS` | _(unset)_ | Extra absolute web error-log paths (max 12). |
 | `NGINX_ERROR_LOG` | `/var/log/nginx/error.log` | Nginx error log path. |
 | `APACHE_ERROR_LOG` | `/var/log/apache2/error.log` | Debian/Ubuntu Apache error log path. |
