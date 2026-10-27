@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Set
 
 from .service_profiles import alias_candidates
+
+_UNIT_RE = re.compile(r"^[a-zA-Z0-9_@.:-]+$")
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,11 @@ class ServiceResolver:
         self._cache: Dict[str, ResolvedService] = {}
 
     def resolve(self, name: str) -> ResolvedService:
+        if not isinstance(name, str) or not name.strip() or not _UNIT_RE.fullmatch(name):
+            return ResolvedService(
+                name=name, unit=name, installed=False, state="not-found"
+            )
+
         cached = self._cache.get(name)
         if cached is not None and cached.installed:
             return cached

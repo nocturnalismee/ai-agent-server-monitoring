@@ -86,3 +86,59 @@ def test_timeout_returns_unknown(monkeypatch):
 
     monkeypatch.setattr(services_module.subprocess, "run", fake_run)
     assert ServiceResolver().resolve("nginx").state == "unknown"
+
+
+def _no_probe(monkeypatch):
+    exists_calls = []
+    run_calls = []
+
+    def fake_exists(path):
+        exists_calls.append(path)
+        return True
+
+    def fake_run(*args, **kwargs):
+        run_calls.append(args)
+        return _show("Id=evil.service\nLoadState=loaded\n")
+
+    monkeypatch.setattr(services_module.os.path, "exists", fake_exists)
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+    return exists_calls, run_calls
+
+
+def test_traversal_name_is_rejected_without_probing(monkeypatch):
+    exists_calls, run_calls = _no_probe(monkeypatch)
+    resolved = ServiceResolver().resolve("../../tmp/evil")
+    assert resolved.installed is False
+    assert resolved.state == "not-found"
+    assert exists_calls == []
+    assert run_calls == []
+
+
+def test_names_with_space_or_slash_are_rejected_without_probing(monkeypatch):
+    exists_calls, run_calls = _no_probe(monkeypatch)
+    resolver = ServiceResolver()
+    assert resolver.resolve("nginx service").state == "not-found"
+    assert resolver.resolve("nginx/service").state == "not-found"
+    assert exists_calls == []
+    assert run_calls == []
+
+
+def test_non_string_name_is_rejected_without_probing(monkeypatch):
+    exists_calls, run_calls = _no_probe(monkeypatch)
+    resolved = ServiceResolver().resolve(None)
+    assert resolved.installed is False
+    assert resolved.state == "not-found"
+    assert exists_calls == []
+    assert run_calls == []
+
+
+def test_valid_suffixed_name_still_resolves(monkeypatch):
+    monkeypatch.setattr(
+        services_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _show("Id=nginx.service\nLoadState=loaded\n"),
+    )
+    resolved = ServiceResolver().resolve("nginx.service")
+    assert resolved.installed is True
+    assert resolved.unit == "nginx.service"
+    assert resolved.state == "installed"
