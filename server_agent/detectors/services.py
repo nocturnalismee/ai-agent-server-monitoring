@@ -1,8 +1,93 @@
 from __future__ import annotations
 
+import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Set
+
+from .service_profiles import alias_candidates
+
+
+@dataclass(frozen=True)
+class ResolvedService:
+    name: str
+    unit: str
+    installed: bool
+    state: str
+
+
+class ServiceResolver:
+    SYSTEMD_DIRS = (
+        "/etc/systemd/system",
+        "/lib/systemd/system",
+        "/usr/lib/systemd/system",
+    )
+
+    def __init__(self, logger=None):
+        self.logger = logger
+        self._cache: Dict[str, ResolvedService] = {}
+
+    def resolve(self, name: str) -> ResolvedService:
+        cached = self._cache.get(name)
+        if cached is not None and cached.installed:
+            return cached
+
+        candidates = alias_candidates(name)
+        for candidate in candidates:
+            unit = self._find_unit_file(candidate)
+            if unit:
+                result = ResolvedService(name, unit, True, "installed")
+                self._cache[name] = result
+                return result
+
+        saw_unknown = False
+        for candidate in candidates:
+            state, unit = self._query_unit(candidate)
+            if state == "unknown":
+                saw_unknown = True
+                continue
+            if state == "installed":
+                result = ResolvedService(name, unit, True, "installed")
+                self._cache[name] = result
+                return result
+
+        if saw_unknown:
+            return ResolvedService(name, candidates[0], False, "unknown")
+        return ResolvedService(name, candidates[0], False, "not-found")
+
+    def _find_unit_file(self, candidate: str) -> str:
+        unit = candidate if candidate.endswith(".service") else f"{candidate}.service"
+        for directory in self.SYSTEMD_DIRS:
+            path = f"{directory}/{unit}"
+            try:
+                if os.path.exists(path):
+                    return unit
+            except (PermissionError, OSError):
+                continue
+        return ""
+
+    def _query_unit(self, candidate: str) -> tuple:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "show", "-p", "Id", "-p", "LoadState", "--", candidate],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return "unknown", ""
+
+        data: Dict[str, str] = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                data[key.strip()] = value.strip()
+        load_state = data.get("LoadState", "")
+        if proc.returncode != 0 or not load_state or load_state == "not-found":
+            return "not-found", ""
+        return "installed", data.get("Id") or candidate
 
 
 class ServiceDetector:
