@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import re
 import subprocess
+from typing import Optional
 
 from ..core.models import Incident
+
+_UNIT_RE = re.compile(r"^[a-zA-Z0-9_@.:-]+$")
 
 
 class EvidenceCollector:
@@ -18,9 +21,11 @@ class EvidenceCollector:
         """Return captured system evidence text, or empty string if not applicable/failed."""
         try:
             if incident.kind == "service":
-                service = incident.details.get("service")
-                if service:
-                    return self._collect_service_journal(service)
+                unit = incident.details.get("unit")
+                service = incident.details.get("service", "")
+                if unit:
+                    return self._collect_service_journal(service, unit)
+                return self._collect_service_journal(service)
 
             elif incident.kind == "health":
                 metric = incident.details.get("metric", "")
@@ -41,24 +46,42 @@ class EvidenceCollector:
                 self.logger.debug("Evidence collection error for %s: %s", incident.fingerprint, exc)
         return ""
 
-    def _collect_service_journal(self, service: str) -> str:
-        # Security hardening: reject any service name that contains non-alphanumeric chars or flags
-        if not re.match(r"^[a-zA-Z0-9_@.-]+$", service):
+    def _collect_service_journal(self, service: str, unit: Optional[str] = None) -> str:
+        target = unit or service
+        # Security hardening: reject any target that contains flags or shell metacharacters.
+        if not target or not _UNIT_RE.match(target):
             return ""
+        parts = []
         try:
-            p = subprocess.run(
-                ["journalctl", "-u", service, "-n", str(self.max_lines), "--no-pager"],
+            proc = subprocess.run(
+                ["journalctl", "-u", target, "-n", str(self.max_lines), "--no-pager"],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
                 check=False,
             )
-            out = (p.stdout or "").strip()
-            if out:
-                return f"--- journalctl -u {service} (last {self.max_lines} lines) ---\n{out}"
+            if proc.stdout.strip():
+                parts.append(
+                    f"--- journalctl -u {target} (last {self.max_lines} lines) ---\n"
+                    f"{proc.stdout.strip()}"
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
-        return ""
+        try:
+            proc = subprocess.run(
+                ["systemctl", "status", "--no-pager", "-l", "--", target],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=False,
+            )
+            output = (proc.stdout or proc.stderr or "").strip()
+            if output:
+                lines = output.splitlines()[: self.max_lines]
+                parts.append("--- systemctl status " + target + " ---\n" + "\n".join(lines))
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+        return "\n\n".join(parts)
 
     def _collect_top_cpu_processes(self) -> str:
         try:

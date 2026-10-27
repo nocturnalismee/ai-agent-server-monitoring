@@ -1,3 +1,4 @@
+import subprocess
 from types import SimpleNamespace
 
 from server_agent.collectors import evidence as evidence_module
@@ -194,3 +195,69 @@ def test_disk_overview_error_returns_empty(monkeypatch):
 
     monkeypatch.setattr(evidence_module.subprocess, "run", missing)
     assert EvidenceCollector()._collect_disk_overview("/") == ""
+
+
+def test_service_evidence_uses_resolved_unit(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "line-1\nline-2\n", "")
+
+    monkeypatch.setattr(evidence_module.subprocess, "run", fake_run)
+    collector = EvidenceCollector(max_lines=10)
+    incident = Incident(
+        kind="service",
+        severity="CRITICAL",
+        title="Service mysql is not active",
+        summary="",
+        fingerprint="service:mysql",
+        details={"service": "mysql", "unit": "mariadb.service"},
+    )
+    text = collector.collect(incident)
+    assert calls[0][:3] == ["journalctl", "-u", "mariadb.service"]
+    assert calls[1][:2] == ["systemctl", "status"]
+    assert "mariadb.service" in text
+    assert "systemctl status mariadb.service" in text
+
+
+def test_service_evidence_rejects_unsafe_unit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        evidence_module.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command),
+    )
+    collector = EvidenceCollector()
+    incident = Incident(
+        kind="service",
+        severity="CRITICAL",
+        title="bad",
+        summary="",
+        fingerprint="service:bad",
+        details={"service": "mysql", "unit": "mysql; rm -rf /"},
+    )
+    assert collector.collect(incident) == ""
+    assert calls == []
+
+
+def test_service_evidence_falls_back_to_service_name(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    monkeypatch.setattr(evidence_module.subprocess, "run", fake_run)
+    collector = EvidenceCollector()
+    incident = Incident(
+        kind="service",
+        severity="CRITICAL",
+        title="Service nginx is not active",
+        summary="",
+        fingerprint="service:nginx",
+        details={"service": "nginx"},
+    )
+    text = collector.collect(incident)
+    assert calls[0][:3] == ["journalctl", "-u", "nginx"]
+    assert "nginx" in text
