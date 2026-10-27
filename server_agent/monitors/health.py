@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import psutil
 
 from ..core.models import Incident
-from ..detectors.services import ServiceDetector
+from ..detectors.service_profiles import resolve_targets
+from ..detectors.services import ResolvedService, ServiceDetector, ServiceResolver
 
 
 class HealthMonitor:
-    def __init__(self, config, state, logger):
+    def __init__(self, config, state, logger, panel: Optional[str] = None):
         self.cfg = config
         self.state = state
-        self.logger = logger
+        self.log = logger
+        self.panel = panel
+        self.resolver = ServiceResolver(logger)
 
-        # Filter installed services if auto_detect_services is enabled
-        if getattr(config, "auto_detect_services", True):
-            detector = ServiceDetector(logger)
-            self.monitored_services = detector.filter_installed_services(self.cfg.services)
-            if self.logger:
-                self.logger.info("Monitored installed services: %s", ", ".join(self.monitored_services) or "none")
-        else:
-            self.monitored_services = list(self.cfg.services)
+        legacy = list(config.services)
+        if config.auto_detect_services:
+            legacy = ServiceDetector(logger).filter_installed_services(legacy)
+        self.monitored_services = legacy
 
         # Prime psutil's non-blocking CPU counter. Subsequent calls are based
         # on elapsed time and do not pause the monitoring loop for one second.
@@ -75,6 +74,124 @@ class HealthMonitor:
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
             return "unknown", str(exc)
 
+    def collect_services(self) -> List[Incident]:
+        incidents: List[Incident] = []
+        targets = self._service_targets()
+        by_unit: Dict[str, Tuple[str, bool, ResolvedService]] = {}
+        for name, required in targets:
+            item = self.resolver.resolve(name)
+            existing = by_unit.get(item.unit)
+            if existing is not None and existing[1] and not required:
+                continue
+            by_unit[item.unit] = (name, required, item)
+        resolved = list(by_unit.values())
+
+        for name, required, item in resolved:
+            if item.state == "not-found":
+                if not required:
+                    continue
+                incidents.append(
+                    self._service_incident(name, item.unit, "not-found", True, "", 0)
+                )
+                continue
+            if item.state == "unknown":
+                if required or self.cfg.alert_on_missing_service:
+                    incidents.append(
+                        self._service_incident(
+                            name,
+                            item.unit,
+                            "unknown",
+                            required,
+                            "",
+                            0,
+                            severity="WARNING",
+                        )
+                    )
+                continue
+
+            state, error = self._service_state(item.unit)
+            key = f"service:{name}"
+            if state == "active":
+                self.state.clear_service_failure(key)
+                was_problem = self.state.set_health_active(key, False)
+                if was_problem and self.cfg.recovery_alerts:
+                    incidents.append(
+                        Incident(
+                            kind="recovery",
+                            severity="INFO",
+                            title=f"Service {name} recovered",
+                            summary=f"Service {name} ({item.unit}) is active again.",
+                            fingerprint=f"recovery:{key}",
+                            details={
+                                "service": name,
+                                "unit": item.unit,
+                                "state": "active",
+                            },
+                        )
+                    )
+                continue
+
+            failures = self.state.increment_service_failure(key)
+            if state == "failed" or failures >= self.cfg.service_failure_threshold:
+                severity = "CRITICAL" if required else "WARNING"
+                incidents.append(
+                    self._service_incident(
+                        name, item.unit, state, required, error, failures, severity
+                    )
+                )
+        return incidents
+
+    def _service_targets(self) -> List[Tuple[str, bool]]:
+        legacy = list(self.cfg.services or [])
+        if legacy and self.cfg.auto_detect_services:
+            legacy = ServiceDetector(self.log).filter_installed_services(legacy)
+        required, optional = resolve_targets(
+            self.cfg.service_profile,
+            self.panel,
+            legacy,
+            self.cfg.services_required or [],
+            self.cfg.services_optional or [],
+        )
+        return [(name, True) for name in required] + [
+            (name, False) for name in optional
+        ]
+
+    def _service_incident(
+        self,
+        name: str,
+        unit: str,
+        state: str,
+        required: bool,
+        error: str,
+        failures: int,
+        severity: str = "CRITICAL",
+    ) -> Incident:
+        key = f"service:{name}"
+        self.state.set_health_active(key, True)
+        if state == "not-found":
+            title = f"Service {name} is not installed"
+        elif state == "unknown":
+            title = f"Service {name} state is unknown"
+        else:
+            title = f"Service {name} is not active"
+        details = {
+            "service": name,
+            "unit": unit,
+            "state": state,
+            "required": required,
+            "consecutive_failures": failures,
+        }
+        if error:
+            details["error"] = error
+        return Incident(
+            kind="service",
+            severity=severity,
+            title=title,
+            summary=f"Service {name} ({unit}) reported state '{state}'.",
+            fingerprint=key,
+            details=details,
+        )
+
     def collect(self) -> List[Incident]:
         incidents: List[Incident] = []
 
@@ -119,35 +236,6 @@ class HealthMonitor:
             if incident:
                 incidents.append(incident)
 
-        for service in self.monitored_services:
-            state, err = self._service_state(service)
-            if state == "unknown" and not self.cfg.alert_on_missing_service:
-                continue
-
-            key = f"service:{service}"
-            active = state == "active"
-            was_problem = self.state.set_health_active(key, not active)
-
-            if not active:
-                # "not-found" is ignored by default because nginx/apache and ssh/sshd names differ by distro.
-                if state in {"not-found", "unknown"} and not self.cfg.alert_on_missing_service:
-                    continue
-                incidents.append(Incident(
-                    kind="service",
-                    severity="CRITICAL",
-                    title=f"Service {service} is not active",
-                    summary=f"systemd reports {service}: {state}",
-                    fingerprint=key,
-                    details={"service": service, "state": state, "error": err},
-                ))
-            elif was_problem and self.cfg.recovery_alerts:
-                incidents.append(Incident(
-                    kind="recovery",
-                    severity="INFO",
-                    title=f"Service {service} recovered",
-                    summary=f"{service} is active again",
-                    fingerprint=f"recovery:{key}",
-                    details={"service": service, "state": state},
-                ))
+        incidents.extend(self.collect_services())
 
         return incidents

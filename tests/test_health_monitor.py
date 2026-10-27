@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from server_agent.detectors.services import ResolvedService
 from server_agent.monitors import health as health_module
 from server_agent.monitors.health import HealthMonitor
 
@@ -7,17 +8,40 @@ from server_agent.monitors.health import HealthMonitor
 class FakeState:
     def __init__(self):
         self.active = {}
+        self.service_failures = {}
 
     def set_health_active(self, key, active):
         previous = self.active.get(key, False)
         self.active[key] = active
         return previous
 
+    def service_failure_count(self, key):
+        return self.service_failures.get(key, 0)
+
+    def increment_service_failure(self, key):
+        self.service_failures[key] = self.service_failures.get(key, 0) + 1
+        return self.service_failures[key]
+
+    def clear_service_failure(self, key):
+        self.service_failures.pop(key, None)
+
+
+class FakeResolver:
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def resolve(self, name):
+        return self.mapping[name]
+
 
 def make_config(**overrides):
     base = {
         "auto_detect_services": False,
         "services": ["nginx"],
+        "service_profile": "auto",
+        "services_required": [],
+        "services_optional": [],
+        "service_failure_threshold": 2,
         "cpu_warning": 80,
         "cpu_critical": 90,
         "memory_warning": 80,
@@ -35,7 +59,11 @@ def make_config(**overrides):
 
 
 def make_monitor(**overrides):
-    return HealthMonitor(make_config(**overrides), FakeState(), logger=None)
+    monitor = HealthMonitor(make_config(**overrides), FakeState(), logger=None)
+    monitor.resolver = FakeResolver(
+        {"nginx": ResolvedService("nginx", "nginx.service", True, "installed")}
+    )
+    return monitor
 
 
 def test_severity_levels():
@@ -173,27 +201,165 @@ def test_collect_reports_service_down_then_recovery(monkeypatch):
 
 
 def test_collect_ignores_missing_service_by_default(monkeypatch):
-    monitor = make_monitor()
+    monitor = make_monitor(
+        services=[],
+        service_profile="none",
+        services_optional=["nginx"],
+    )
     _patch_metrics(monkeypatch)
-    monkeypatch.setattr(monitor, "_service_state", lambda service: ("not-found", ""))
+    monitor.resolver = FakeResolver(
+        {"nginx": ResolvedService("nginx", "nginx.service", False, "not-found")}
+    )
     assert monitor.collect() == []
 
 
 def test_collect_alerts_on_missing_service_when_enabled(monkeypatch):
-    monitor = make_monitor(alert_on_missing_service=True)
+    monitor = make_monitor(
+        services=[],
+        service_profile="none",
+        services_optional=["nginx"],
+        alert_on_missing_service=True,
+    )
     _patch_metrics(monkeypatch)
-    monkeypatch.setattr(monitor, "_service_state", lambda service: ("not-found", ""))
+    monitor.resolver = FakeResolver(
+        {"nginx": ResolvedService("nginx", "nginx.service", False, "unknown")}
+    )
 
     incidents = monitor.collect()
     assert len(incidents) == 1
     assert incidents[0].kind == "service"
-    assert incidents[0].severity == "CRITICAL"
+    assert incidents[0].severity == "WARNING"
 
 
 def test_collect_skips_unknown_service_before_tracking(monkeypatch):
-    monitor = make_monitor()
+    monitor = make_monitor(
+        services=[],
+        service_profile="none",
+        services_optional=["nginx"],
+    )
     _patch_metrics(monkeypatch)
-    monkeypatch.setattr(monitor, "_service_state", lambda service: ("unknown", "boom"))
+    monitor.resolver = FakeResolver(
+        {"nginx": ResolvedService("nginx", "nginx.service", False, "unknown")}
+    )
 
     assert monitor.collect() == []
     assert "service:nginx" not in monitor.state.active
+
+
+def _service_monitor(monkeypatch, mapping, is_active):
+    monitor = make_monitor(services=[])
+    monitor.cfg.service_profile = "none"
+    monitor.cfg.services_required = ["mysql"]
+    monitor.cfg.services_optional = ["redis"]
+    monitor.cfg.service_failure_threshold = 2
+    monitor.cfg.alert_on_missing_service = False
+    monitor.cfg.recovery_alerts = True
+    monitor.resolver = FakeResolver(mapping)
+    monkeypatch.setattr(
+        monitor, "_service_state", lambda unit: is_active(unit)
+    )
+    return monitor
+
+
+def test_required_missing_service_is_critical(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", False, "not-found"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(monkeypatch, mapping, lambda unit: ("active", ""))
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "CRITICAL"
+    assert incidents[0].details["unit"] == "mysql.service"
+    assert incidents[0].details["required"] is True
+
+
+def test_optional_missing_service_is_skipped(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", False, "not-found"),
+    }
+    monitor = _service_monitor(monkeypatch, mapping, lambda unit: ("active", ""))
+    assert monitor.collect_services() == []
+
+
+def test_service_alert_waits_for_threshold(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: ("active", "") if unit == "redis.service" else ("inactive", ""),
+    )
+    assert monitor.collect_services() == []
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "CRITICAL"
+    assert incidents[0].details["consecutive_failures"] == 2
+
+
+def test_failed_service_alerts_immediately(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: ("active", "") if unit == "redis.service" else ("failed", "boom"),
+    )
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "CRITICAL"
+    assert incidents[0].details["state"] == "failed"
+
+
+def test_optional_inactive_is_warning_at_threshold(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: (
+            ("inactive", "") if unit == "redis.service" else ("active", "")
+        ),
+    )
+    assert monitor.collect_services() == []
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "WARNING"
+    assert incidents[0].details["required"] is False
+
+
+def test_active_service_clears_counter_and_emits_recovery(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: ("active", "") if unit == "redis.service" else ("failed", "boom"),
+    )
+    monitor.collect_services()
+    monitor._service_state = lambda unit: ("active", "")
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].kind == "recovery"
+    assert incidents[0].severity == "INFO"
+
+
+def test_unknown_required_is_warning(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", False, "unknown"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(monkeypatch, mapping, lambda unit: ("active", ""))
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "WARNING"
+    assert incidents[0].details["state"] == "unknown"
