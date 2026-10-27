@@ -1,9 +1,41 @@
 from server_agent.detectors.service_profiles import (
+    ALIAS_GROUPS,
+    PROFILE_NAMES,
     alias_candidates,
     panel_to_profile,
     profile_name,
     resolve_targets,
 )
+
+
+def test_profile_names_exact():
+    expected = frozenset(
+        {
+            "auto",
+            "none",
+            "standalone",
+            "cpanel",
+            "cyberpanel",
+            "aapanel",
+            "plesk",
+            "directadmin",
+            "hestiacp",
+            "cloudpanel",
+            "runcloud",
+        }
+    )
+    assert PROFILE_NAMES == expected
+    assert isinstance(PROFILE_NAMES, frozenset)
+
+
+def test_alias_groups_exact_order():
+    assert ALIAS_GROUPS == (
+        ("ssh", "sshd"),
+        ("apache2", "httpd", "apache"),
+        ("mysql", "mariadb", "mysqld"),
+        ("exim", "exim4"),
+        ("named", "bind9", "named-chroot"),
+    )
 
 
 def test_auto_follows_detected_panel():
@@ -48,7 +80,16 @@ def test_required_override_replaces_required_but_keeps_profile_optional():
         "cpanel", None, required_override=["httpd", "mysql"]
     )
     assert required == ["httpd", "mysql"]
-    assert optional == ["named"] or "named" in optional
+    assert optional == [
+        "named",
+        "lsws",
+        "cphulkd",
+        "pure-ftpd",
+        "clamd",
+        "spamd",
+        "redis",
+        "php-fpm",
+    ]
 
 
 def test_optional_override_replaces_optional_but_keeps_profile_required():

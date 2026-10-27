@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 @dataclass(frozen=True)
 class ServiceProfile:
-    required: List[str] = field(default_factory=list)
-    optional: List[str] = field(default_factory=list)
+    required: Tuple[str, ...] = ()
+    optional: Tuple[str, ...] = ()
 
 
 PROFILES: Dict[str, ServiceProfile] = {
     "standalone": ServiceProfile(
-        ["ssh"],
-        ["nginx", "apache2", "httpd", "mysql", "redis", "docker"],
+        ("ssh",),
+        ("nginx", "apache2", "httpd", "mysql", "redis", "docker"),
     ),
     "cpanel": ServiceProfile(
-        ["cpanel", "mysql", "exim", "dovecot"],
-        [
+        ("cpanel", "mysql", "exim", "dovecot"),
+        (
             "named",
             "httpd",
             "lsws",
@@ -29,19 +29,19 @@ PROFILES: Dict[str, ServiceProfile] = {
             "spamd",
             "redis",
             "php-fpm",
-        ],
+        ),
     ),
     "cyberpanel": ServiceProfile(
-        ["lscpd", "lsws", "mariadb"],
-        ["postfix", "pure-ftpd", "dovecot", "powerdns", "redis", "php-fpm"],
+        ("lscpd", "lsws", "mariadb"),
+        ("postfix", "pure-ftpd", "dovecot", "powerdns", "redis", "php-fpm"),
     ),
     "aapanel": ServiceProfile(
-        ["bt", "mysql"],
-        ["nginx", "httpd", "apache2", "php-fpm", "redis", "pure-ftpd", "postgresql"],
+        ("bt", "mysql"),
+        ("nginx", "httpd", "apache2", "php-fpm", "redis", "pure-ftpd", "postgresql"),
     ),
     "plesk": ServiceProfile(
-        ["sw-cp-server", "sw-engine", "psa"],
-        [
+        ("sw-cp-server", "sw-engine", "psa"),
+        (
             "nginx",
             "apache2",
             "httpd",
@@ -50,15 +50,15 @@ PROFILES: Dict[str, ServiceProfile] = {
             "mysql",
             "redis",
             "php-fpm",
-        ],
+        ),
     ),
     "directadmin": ServiceProfile(
-        ["directadmin"],
-        ["httpd", "nginx", "apache2", "exim", "dovecot", "mysql", "php-fpm", "redis"],
+        ("directadmin",),
+        ("httpd", "nginx", "apache2", "exim", "dovecot", "mysql", "php-fpm", "redis"),
     ),
     "hestiacp": ServiceProfile(
-        ["hestia"],
-        [
+        ("hestia",),
+        (
             "nginx",
             "apache2",
             "exim",
@@ -68,22 +68,22 @@ PROFILES: Dict[str, ServiceProfile] = {
             "vsftpd",
             "php-fpm",
             "redis",
-        ],
+        ),
     ),
-    "cloudpanel": ServiceProfile(["clp-nginx", "clp-php-fpm"], ["mysql", "redis"]),
-    "runcloud": ServiceProfile(["nginx"], ["php-fpm", "mysql", "redis"]),
+    "cloudpanel": ServiceProfile(("clp-nginx", "clp-php-fpm"), ("mysql", "redis")),
+    "runcloud": ServiceProfile(("nginx",), ("php-fpm", "mysql", "redis")),
     "none": ServiceProfile(),
 }
 
-PROFILE_NAMES: Set[str] = {"auto", *PROFILES}
+PROFILE_NAMES: FrozenSet[str] = frozenset({"auto", *PROFILES})
 
-ALIAS_GROUPS: List[Tuple[str, ...]] = [
+ALIAS_GROUPS: Tuple[Tuple[str, ...], ...] = (
     ("ssh", "sshd"),
     ("apache2", "httpd", "apache"),
     ("mysql", "mariadb", "mysqld"),
     ("exim", "exim4"),
     ("named", "bind9", "named-chroot"),
-]
+)
 
 _PANEL_TO_PROFILE: Tuple[Tuple[str, str], ...] = (
     ("cpanel", "cpanel"),
@@ -148,9 +148,9 @@ def _clean(values: Iterable[str]) -> List[str]:
 def resolve_targets(
     profile: str,
     panel: Optional[str],
-    legacy_services: Iterable[str] = (),
-    required_override: Iterable[str] = (),
-    optional_override: Iterable[str] = (),
+    legacy_services: Sequence[str] = (),
+    required_override: Sequence[str] = (),
+    optional_override: Sequence[str] = (),
 ) -> Tuple[List[str], List[str]]:
     legacy = _clean(legacy_services)
     if legacy:
