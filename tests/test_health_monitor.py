@@ -213,7 +213,7 @@ def test_collect_ignores_missing_service_by_default(monkeypatch):
     assert monitor.collect() == []
 
 
-def test_collect_alerts_on_missing_service_when_enabled(monkeypatch):
+def test_collect_alerts_on_unknown_optional_service_when_enabled(monkeypatch):
     monitor = make_monitor(
         services=[],
         service_profile="none",
@@ -229,6 +229,7 @@ def test_collect_alerts_on_missing_service_when_enabled(monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].kind == "service"
     assert incidents[0].severity == "WARNING"
+    assert incidents[0].details["required"] is False
 
 
 def test_collect_skips_unknown_service_before_tracking(monkeypatch):
@@ -314,6 +315,25 @@ def test_failed_service_alerts_immediately(monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].severity == "CRITICAL"
     assert incidents[0].details["state"] == "failed"
+    assert incidents[0].details["error"] == "boom"
+
+
+def test_optional_failed_is_warning_immediately(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "redis": ResolvedService("redis", "redis.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: ("failed", "boom") if unit == "redis.service" else ("active", ""),
+    )
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].severity == "WARNING"
+    assert incidents[0].details["required"] is False
+    assert incidents[0].details["state"] == "failed"
+    assert incidents[0].details["error"] == "boom"
 
 
 def test_optional_inactive_is_warning_at_threshold(monkeypatch):
@@ -351,6 +371,29 @@ def test_active_service_clears_counter_and_emits_recovery(monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].kind == "recovery"
     assert incidents[0].severity == "INFO"
+    assert monitor.state.service_failure_count("service:mysql") == 0
+    assert monitor.collect_services() == []
+
+
+def test_duplicate_unit_required_wins(monkeypatch):
+    mapping = {
+        "mysql": ResolvedService("mysql", "mysql.service", True, "installed"),
+        "mariadb": ResolvedService("mariadb", "mysql.service", True, "installed"),
+    }
+    monitor = _service_monitor(
+        monkeypatch,
+        mapping,
+        lambda unit: ("inactive", ""),
+    )
+    monitor.cfg.services_required = ["mysql"]
+    monitor.cfg.services_optional = ["mariadb"]
+    monitor.cfg.service_failure_threshold = 1
+    incidents = monitor.collect_services()
+    assert len(incidents) == 1
+    assert incidents[0].details["service"] == "mysql"
+    assert incidents[0].details["unit"] == "mysql.service"
+    assert incidents[0].details["required"] is True
+    assert incidents[0].severity == "CRITICAL"
 
 
 def test_unknown_required_is_warning(monkeypatch):
