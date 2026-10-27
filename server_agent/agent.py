@@ -19,6 +19,8 @@ from .core.models import Incident
 from .core.redaction import sanitize_incident
 from .core.state import StateStore
 from .detectors.environment import EnvironmentDetector
+from .detectors.service_profiles import profile_name, resolve_targets
+from .detectors.services import ServiceDetector
 from .monitors.health import HealthMonitor
 from .monitors.kernel import KernelMonitor
 from .monitors.ssh import SSHMonitor
@@ -175,7 +177,12 @@ class Agent:
             else None
         )
 
-        self.health = HealthMonitor(cfg, self.state, self.log)
+        self.health = HealthMonitor(
+            cfg,
+            self.state,
+            self.log,
+            panel=self.metadata.panel if self.metadata else None,
+        )
         self.web = WebLogMonitor(cfg, self.tailer, self.log)
         self.ssh = SSHMonitor(cfg, self.state, self.tailer, self.log)
         self.kernel = KernelMonitor(cfg, self.state, self.tailer, self.log)
@@ -334,6 +341,29 @@ class Agent:
         self.log.info("Server AI Agent stopped")
 
 
+def _print_service_plan(cfg) -> None:
+    panel = None
+    if getattr(cfg, "auto_detect_environment", False):
+        try:
+            panel = EnvironmentDetector(None).detect().panel
+        except Exception:
+            panel = None
+    legacy = list(cfg.services)
+    if legacy and getattr(cfg, "auto_detect_services", True):
+        legacy = ServiceDetector(None).filter_installed_services(legacy)
+    required, optional = resolve_targets(
+        cfg.service_profile,
+        panel,
+        legacy,
+        cfg.services_required,
+        cfg.services_optional,
+    )
+    mode = "auto" if cfg.service_profile == "auto" else "explicit"
+    print(f"Service profile: {profile_name(cfg.service_profile, panel)} ({mode})")
+    print("Required: " + (", ".join(required) if required else "(none)"))
+    print("Optional: " + (", ".join(optional) if optional else "(none)"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Read-only AI server health/security monitor")
     parser.add_argument("--once", action="store_true", help="Run one monitoring cycle and exit")
@@ -352,6 +382,7 @@ def main():
 
     if args.check_config:
         print("Configuration OK")
+        _print_service_plan(cfg)
         return 0
 
     if args.check_heartbeat:

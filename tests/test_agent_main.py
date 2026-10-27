@@ -7,17 +7,33 @@ from server_agent import agent as agent_module
 
 
 class FakeConfig:
-    def __init__(self, channel="telegram", error=None):
+    def __init__(
+        self,
+        channel="telegram",
+        error=None,
+        service_profile="auto",
+        services_required=None,
+        services_optional=None,
+        services=None,
+        auto_detect_environment=False,
+        auto_detect_services=False,
+    ):
         self.alert_channel = channel
         self._error = error
+        self.service_profile = service_profile
+        self.services_required = list(services_required or [])
+        self.services_optional = list(services_optional or [])
+        self.services = list(services or [])
+        self.auto_detect_environment = auto_detect_environment
+        self.auto_detect_services = auto_detect_services
 
     def validate(self):
         if self._error:
             raise ValueError(self._error)
 
 
-def _patch_config(monkeypatch, channel="telegram", error=None):
-    cfg = FakeConfig(channel=channel, error=error)
+def _patch_config(monkeypatch, channel="telegram", error=None, **kwargs):
+    cfg = FakeConfig(channel=channel, error=error, **kwargs)
     monkeypatch.setattr(agent_module, "Config", lambda: cfg)
     return cfg
 
@@ -147,3 +163,46 @@ def test_run_installs_handlers_and_runs(monkeypatch):
     assert agent_module.main() == 0
     assert FakeAgent.last.ran is True
     assert len(installed) == 2
+
+
+def test_check_config_prints_service_plan(monkeypatch, capsys):
+    _patch_config(
+        monkeypatch,
+        service_profile="cpanel",
+        services_required=["httpd", "mysql"],
+        services_optional=["redis"],
+        auto_detect_environment=False,
+    )
+    _patch_agent(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["server_agent", "--check-config"])
+
+    assert agent_module.main() == 0
+    out = capsys.readouterr().out
+    assert "Configuration OK" in out
+    assert "Service profile: cpanel (explicit)" in out
+    assert "Required: httpd, mysql" in out
+    assert "Optional: redis" in out
+
+
+def test_check_config_auto_uses_detected_panel(monkeypatch, capsys):
+    _patch_config(
+        monkeypatch,
+        service_profile="auto",
+        services_required=[],
+        services_optional=[],
+        auto_detect_environment=True,
+    )
+    _patch_agent(monkeypatch)
+    monkeypatch.setattr(
+        agent_module,
+        "EnvironmentDetector",
+        lambda logger=None: SimpleNamespace(
+            detect=lambda: SimpleNamespace(panel="cPanel/WHM")
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["server_agent", "--check-config"])
+
+    assert agent_module.main() == 0
+    out = capsys.readouterr().out
+    assert "Service profile: cpanel (auto)" in out
+    assert "Required: cpanel, mysql, exim, dovecot" in out
