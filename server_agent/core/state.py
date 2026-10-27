@@ -33,6 +33,7 @@ class StateStore:
             "health_active": {},
             "ssh_failures": {},
             "journal": {},
+            "service_failures": {},
         }
         try:
             data = json.loads(self.path.read_text())
@@ -143,6 +144,32 @@ class StateStore:
             failures = self.data.setdefault("ssh_failures", {})
             if ip in failures:
                 failures.pop(ip)
+                self.save()
+
+    def service_failure_count(self, key: str) -> int:
+        with self.lock:
+            failures = self.data.setdefault("service_failures", {})
+            try:
+                return int(failures.get(key, 0))
+            except (TypeError, ValueError):
+                return 0
+
+    def increment_service_failure(self, key: str) -> int:
+        with self.lock:
+            failures = self.data.setdefault("service_failures", {})
+            try:
+                count = int(failures.get(key, 0)) + 1
+            except (TypeError, ValueError):
+                count = 1
+            failures[key] = count
+            self.save()
+            return count
+
+    def clear_service_failure(self, key: str) -> None:
+        with self.lock:
+            failures = self.data.setdefault("service_failures", {})
+            if key in failures:
+                failures.pop(key)
                 self.save()
 
     def heartbeat(self) -> Optional[str]:

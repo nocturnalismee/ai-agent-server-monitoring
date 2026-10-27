@@ -188,4 +188,31 @@ def test_invalid_state_file_loads_empty_state(tmp_path):
         "health_active": {},
         "ssh_failures": {},
         "journal": {},
+        "service_failures": {},
     }
+
+
+def test_service_failure_counter_roundtrip(tmp_path):
+    from server_agent.core.state import StateStore
+
+    state = StateStore(tmp_path)
+    key = "service:mysql"
+    assert state.service_failure_count(key) == 0
+    assert state.increment_service_failure(key) == 1
+    assert state.increment_service_failure(key) == 2
+    assert state.service_failure_count(key) == 2
+
+    reloaded = StateStore(tmp_path)
+    assert reloaded.service_failure_count(key) == 2
+
+    reloaded.clear_service_failure(key)
+    assert reloaded.service_failure_count(key) == 0
+    assert StateStore(tmp_path).service_failure_count(key) == 0
+
+
+def test_clear_missing_service_counter_is_a_noop(tmp_path):
+    from server_agent.core.state import StateStore
+
+    state = StateStore(tmp_path)
+    state.clear_service_failure("service:absent")
+    assert state.service_failure_count("service:absent") == 0
