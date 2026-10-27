@@ -9,7 +9,7 @@ It monitors host health and selected logs, collects real-time diagnostic evidenc
 ## What it does
 
 - **Context-Aware AI Diagnosis**: Automatically identifies host OS (e.g. CloudLinux, Ubuntu, AlmaLinux) and hosting control panels (cPanel, aaPanel, CyberPanel, etc.). AI prompts are dynamically injected with specific CLI tools, configuration paths, and safe troubleshooting procedures tailored to that exact environment.
-- **Dynamic Service Discovery**: Automatically detects which systemd services are actually installed on the server to eliminate false alerts for uninstalled services.
+- **Panel-Aware Service Monitoring**: Selects required and optional systemd services for the detected control panel. Missing required services alert, while the legacy `SERVICES` list can still be filtered to installed units with `AUTO_DETECT_SERVICES`.
 - **Pre-AI Incident Evidence Capture**: When a service crashes or CPU/RAM spikes, the agent captures the last 15 lines of `journalctl -u <service>` or top processes before calling AI, giving the AI real log proof for accurate root cause analysis.
 - **Clean, One-Tap Copy Telegram Alerts**: Telegram notifications feature short server identifiers, environment badges (`🏷️ CloudLinux 8.5 · cPanel · LiteSpeed`), structured details, and copy-pasteable monospace commands.
 - **Host Health Monitoring**: Non-blocking periodic checks for CPU, RAM, Disk mounts, and 1-minute load average per CPU.
@@ -36,7 +36,7 @@ server_agent/
 │
 ├── detectors/                # Auto-discovery engines
 │   ├── environment.py        # OS (CloudLinux/Alma/Ubuntu), Panel (cPanel/aaPanel/etc), & Stack
-│   └── services.py           # Filters out uninstalled services to avoid false alarms
+│   └── services.py           # Resolves panel/legacy targets; filters legacy lists to installed units
 │
 ├── collectors/               # Evidence & telemetry collectors
 │   ├── evidence.py           # Real-time snapshot of journalctl / top CPU-RAM processes
@@ -104,7 +104,7 @@ The installer:
 - Installs Python 3, venv, and required OS packages (`apt`, `dnf`, or `yum`).
 - Creates the non-login `server-agent` system user.
 - Installs the application to `/opt/server-ai-agent`.
-- Generates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600` (preserves existing config on update).
+- Generates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600` (preserves existing config on update; new installs set `SERVICE_PROFILE=auto`).
 - Configures the systemd service, the heartbeat watchdog service/timer, and logrotate.
 
 The service is installed but left stopped until you configure it. After editing
@@ -248,18 +248,25 @@ overrides.
 | hestiacp | hestia | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
 | cloudpanel | clp-nginx, clp-php-fpm | mysql, redis |
 | runcloud | nginx | php-fpm, mysql, redis |
+| none | _(empty)_ | _(empty)_ |
 
 `php-fpm` in a profile matches only the unversioned unit; versioned units such as
 `php8.2-fpm` are not inferred. List them explicitly if you monitor them.
 
 Override precedence (highest first):
 
-1. `SERVICES` (legacy) — when non-empty, replaces both lists and keeps
-   `AUTO_DETECT_SERVICES` filtering. It is empty by default.
+1. `SERVICES` (legacy) — when non-empty, replaces both lists. When
+   `AUTO_DETECT_SERVICES=true`, its entries are filtered to installed units
+   (not alias-aware) before resolution; if every entry is filtered out, the
+   profile is used instead. It is empty by default.
 2. `SERVICES_REQUIRED` — when non-empty, replaces the profile's required list.
 3. `SERVICES_OPTIONAL` — when non-empty, replaces the profile's optional list.
 4. `SERVICE_PROFILE` — supplies any list not overridden; `auto` follows the
    detected panel.
+
+During resolution, a name that appears in both the effective required and
+optional lists is kept as required. Configuring the same name in both explicit
+`SERVICES_REQUIRED` and `SERVICES_OPTIONAL` is a validation error instead.
 
 Common aliases are resolved automatically: `ssh`/`sshd`,
 `apache2`/`httpd`/`apache`, `mysql`/`mariadb`/`mysqld`, `exim`/`exim4`,
@@ -274,16 +281,21 @@ Severity and timing:
 - A `failed` unit alerts immediately: `CRITICAL` when required, `WARNING` when
   optional.
 - Other non-active states alert after `SERVICE_FAILURE_THRESHOLD` consecutive
-  non-active checks (default `2`).
+  non-active checks (default `2`): `CRITICAL` when required, `WARNING` when
+  optional.
 - Recovery notices are `INFO` when `RECOVERY_ALERTS=true`.
 
 Incident evidence uses the resolved unit: read-only `journalctl -u <unit>` and
 `systemctl status --no-pager -l -- <unit>`.
 
-To print the effective service plan, run:
+To print the effective service plan with the installed environment, run:
 
 ```bash
-sudo -u server-agent /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
+sudo systemd-run --wait --pipe --collect \
+  -p WorkingDirectory=/opt/server-ai-agent \
+  -p User=server-agent -p Group=server-agent \
+  -p EnvironmentFile=/etc/server-ai-agent/server-ai-agent.env \
+  /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
 ```
 
 After `Configuration OK`, the output shows the resolved profile (mode `auto` for
@@ -448,7 +460,12 @@ sudo ./install.sh
 
 Re-running the installer refreshes dependencies, systemd units (including the
 watchdog service and timer), and the logrotate policy, while preserving your
-existing environment file. Then restart the service and re-enable the timer:
+existing environment file. Existing environment files without `SERVICE_PROFILE`
+now default to `auto`, so an upgraded installation may begin monitoring the
+detected panel's required/optional services and emit new alerts. To keep the
+previous watch list, set `SERVICE_PROFILE=none` and list it explicitly in
+`SERVICES_REQUIRED`/`SERVICES_OPTIONAL`, or set the legacy `SERVICES` list.
+Then restart the service and re-enable the timer:
 
 ```bash
 sudo systemctl restart server-ai-agent
@@ -481,7 +498,8 @@ sudo ./uninstall.sh
 
 - **Service will not start**: `sudo systemctl status server-ai-agent` and
   `sudo journalctl -u server-ai-agent -n 100 --no-pager`, then run
-  `sudo -u server-agent /opt/server-ai-agent/venv/bin/python -m server_agent --check-config`.
+  `--check-config` through the installed environment using the `systemd-run`
+  form in [Validate & Test](#4-validate--test).
 - **Logs are unreadable**: grant read access through the distro/panel group
   policy (for example `adm` or `systemd-journal`) or a reviewed ACL. Do not run
   the agent as root.
@@ -502,13 +520,20 @@ sudo ./uninstall.sh
 - **Optional service you do not want monitored**: set `SERVICES_OPTIONAL` to the
   exact optional list you want (it replaces the profile's optional list), or use
   `SERVICE_PROFILE=none` with explicit lists. Required services remain required.
+- **Service uses a non-standard or versioned unit name**: common aliases
+  (`ssh`/`sshd`, `apache2`/`httpd`/`apache`, `mysql`/`mariadb`/`mysqld`,
+  `exim`/`exim4`, `named`/`bind9`/`named-chroot`) resolve automatically, and
+  `--check-config` shows the effective required/optional lists. If a service
+  uses another unit name, set that explicit unit in `SERVICES_REQUIRED` or
+  `SERVICES_OPTIONAL`; versioned `php-fpm` units are not guessed.
 - **Flapping or noisy service alerts**: raise `SERVICE_FAILURE_THRESHOLD` (1-10)
   so a service must stay non-active for more consecutive checks; `failed` units
   still alert immediately. `RECOVERY_ALERTS=false` suppresses recovery notices,
   and `ALERT_COOLDOWN_SECONDS` limits repeat delivery.
-- **Verify the effective service plan**: run `--check-config` as shown above and
-  inspect the `Service profile`, `Required`, and `Optional` lines, which reflect
-  panel auto-detection and all overrides.
+- **Verify the effective service plan**: run the installed-environment
+  `systemd-run --check-config` form shown above and inspect the `Service
+  profile`, `Required`, and `Optional` lines, which reflect panel auto-detection
+  and all overrides.
 
 ---
 
@@ -542,7 +567,7 @@ python -m pytest -q        # run the test suite
 python -m pytest -q --cov=server_agent --cov-report=term-missing  # coverage (fails below 55%)
 python -m ruff check .     # lint + import order
 pip-audit -r requirements.txt   # audit runtime deps (Python >= 3.10)
-python -m server_agent --check-config
+python -m server_agent --check-config  # local .env; use systemd-run for installed env
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on Python 3.9–3.12 for every
@@ -592,7 +617,7 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `SERVER_NAME` | auto-detected | Stable display name used in alerts and fingerprints. |
 | `ENVIRONMENT` | `production` | Environment label shown in alert headers/footers. |
 | `ALERT_CHANNEL` | `email` | Primary delivery channel: `email` or `telegram`. |
-| `SERVICES` | _(unset)_ | Legacy comma-separated watch list; when set, replaces the profile and is auto-filtered to installed units. |
+| `SERVICES` | _(unset)_ | Legacy watch list; when set, replaces the profile. `AUTO_DETECT_SERVICES=true` filters it to installed units. |
 | `SERVICE_PROFILE` | `auto` | Per-panel service profile: `auto`, `none`, or a panel name. |
 | `SERVICES_REQUIRED` | _(unset)_ | Overrides the profile's required service list. |
 | `SERVICES_OPTIONAL` | _(unset)_ | Overrides the profile's optional service list. |
