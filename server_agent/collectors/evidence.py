@@ -49,7 +49,7 @@ class EvidenceCollector:
     def _collect_service_journal(self, service: str, unit: Optional[str] = None) -> str:
         target = unit or service
         # Security hardening: reject any target that contains flags or shell metacharacters.
-        if not target or not _UNIT_RE.match(target):
+        if not target or not _UNIT_RE.fullmatch(target):
             return ""
         parts = []
         try:
@@ -75,7 +75,12 @@ class EvidenceCollector:
                 timeout=self.timeout,
                 check=False,
             )
-            output = (proc.stdout or proc.stderr or "").strip()
+            streams = [
+                text.strip()
+                for text in (proc.stdout, proc.stderr)
+                if text and text.strip()
+            ]
+            output = "\n".join(streams)
             if output:
                 lines = output.splitlines()[: self.max_lines]
                 parts.append("--- systemctl status " + target + " ---\n" + "\n".join(lines))

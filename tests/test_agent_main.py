@@ -206,3 +206,57 @@ def test_check_config_auto_uses_detected_panel(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Service profile: cpanel (auto)" in out
     assert "Required: cpanel, mysql, exim, dovecot" in out
+
+
+def test_check_config_explicit_profile_skips_panel_detection(monkeypatch, capsys):
+    _patch_config(
+        monkeypatch,
+        service_profile="cpanel",
+        services_required=["httpd"],
+        services_optional=[],
+        auto_detect_environment=True,
+    )
+    _patch_agent(monkeypatch)
+    calls = []
+
+    class Detector:
+        def __init__(self, logger=None):
+            calls.append(logger)
+
+        def detect(self):
+            return SimpleNamespace(panel="cPanel/WHM")
+
+    monkeypatch.setattr(agent_module, "EnvironmentDetector", Detector)
+    monkeypatch.setattr(sys, "argv", ["server_agent", "--check-config"])
+
+    assert agent_module.main() == 0
+    out = capsys.readouterr().out
+    assert "Service profile: cpanel (explicit)" in out
+    assert calls == []
+
+
+def test_check_config_legacy_services_skip_panel_detection(monkeypatch, capsys):
+    _patch_config(
+        monkeypatch,
+        service_profile="auto",
+        services=["nginx"],
+        auto_detect_environment=True,
+        auto_detect_services=False,
+    )
+    _patch_agent(monkeypatch)
+    calls = []
+
+    class Detector:
+        def __init__(self, logger=None):
+            calls.append(logger)
+
+        def detect(self):
+            return SimpleNamespace(panel="cPanel/WHM")
+
+    monkeypatch.setattr(agent_module, "EnvironmentDetector", Detector)
+    monkeypatch.setattr(sys, "argv", ["server_agent", "--check-config"])
+
+    assert agent_module.main() == 0
+    out = capsys.readouterr().out
+    assert "Required: nginx" in out
+    assert calls == []

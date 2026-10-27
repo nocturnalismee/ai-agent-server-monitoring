@@ -36,7 +36,8 @@ server_agent/
 │
 ├── detectors/                # Auto-discovery engines
 │   ├── environment.py        # OS (CloudLinux/Alma/Ubuntu), Panel (cPanel/aaPanel/etc), & Stack
-│   └── services.py           # Resolves panel/legacy targets; filters legacy lists to installed units
+│   ├── service_profiles.py   # Per-panel profiles, aliases, and env precedence
+│   └── services.py           # Maps configured names to systemd units; filters legacy lists
 │
 ├── collectors/               # Evidence & telemetry collectors
 │   ├── evidence.py           # Real-time snapshot of journalctl / top CPU-RAM processes
@@ -84,11 +85,15 @@ git clone --depth 1 --branch main \
 cd /tmp/ai-agent-server-monitoring
 ```
 
-Inspect platform defaults detected by the installer:
+Preview platform defaults detected by the installer:
 
 ```bash
 ./install.sh --print-platform
 ```
+
+This is a pre-install hint only: the service profile is resolved at runtime, so
+use `--check-config` after installation to see the effective required/optional
+service lists.
 
 ---
 
@@ -104,7 +109,7 @@ The installer:
 - Installs Python 3, venv, and required OS packages (`apt`, `dnf`, or `yum`).
 - Creates the non-login `server-agent` system user.
 - Installs the application to `/opt/server-ai-agent`.
-- Generates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600` (preserves existing config on update; new installs set `SERVICE_PROFILE=auto`).
+- Generates `/etc/server-ai-agent/server-ai-agent.env` with mode `0600`. Existing config is preserved on update; new installs set `SERVICE_PROFILE=auto`, while an existing non-empty `SERVICES` list keeps overriding it.
 - Configures the systemd service, the heartbeat watchdog service/timer, and logrotate.
 
 The service is installed but left stopped until you configure it. After editing
@@ -246,6 +251,7 @@ overrides.
 | plesk | sw-cp-server, sw-engine, psa | nginx, apache2, httpd, postfix, dovecot, mysql, redis, php-fpm |
 | directadmin | directadmin | httpd, nginx, apache2, exim, dovecot, mysql, php-fpm, redis |
 | hestiacp | hestia | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
+| vestacp | vesta | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
 | cloudpanel | clp-nginx, clp-php-fpm | mysql, redis |
 | runcloud | nginx | php-fpm, mysql, redis |
 | none | _(empty)_ | _(empty)_ |
@@ -270,7 +276,8 @@ optional lists is kept as required. Configuring the same name in both explicit
 
 Common aliases are resolved automatically: `ssh`/`sshd`,
 `apache2`/`httpd`/`apache`, `mysql`/`mariadb`/`mysqld`, `exim`/`exim4`,
-`named`/`bind9`/`named-chroot`.
+`named`/`bind9`/`named-chroot`, `redis`/`redis-server`, `powerdns`/`pdns`.
+The configured name is tried first, followed by its alias peers.
 
 Severity and timing:
 
@@ -460,11 +467,22 @@ sudo ./install.sh
 
 Re-running the installer refreshes dependencies, systemd units (including the
 watchdog service and timer), and the logrotate policy, while preserving your
-existing environment file. Existing environment files without `SERVICE_PROFILE`
-now default to `auto`, so an upgraded installation may begin monitoring the
-detected panel's required/optional services and emit new alerts. To keep the
-previous watch list, set `SERVICE_PROFILE=none` and list it explicitly in
-`SERVICES_REQUIRED`/`SERVICES_OPTIONAL`, or set the legacy `SERVICES` list.
+existing environment file.
+
+Service monitoring does not switch to profiles automatically on upgrade. A
+non-empty legacy `SERVICES` list written by an older installer still wins at
+runtime, so no change is needed to keep the previous watch list. To adopt the
+per-panel profiles, remove or empty `SERVICES` (and set `SERVICE_PROFILE` if you
+want an explicit profile). While legacy `SERVICES` is non-empty,
+`SERVICE_PROFILE=none` and `SERVICES_REQUIRED`/`SERVICES_OPTIONAL` are ignored.
+
+Legacy monitoring semantics changed: with `AUTO_DETECT_SERVICES=false`, a
+missing legacy service is now `CRITICAL` (previously it was skipped when
+`ALERT_ON_MISSING_SERVICE=false`); an `unknown` state is now `WARNING`; and a
+non-active service alerts after `SERVICE_FAILURE_THRESHOLD` consecutive checks.
+With `AUTO_DETECT_SERVICES=true` (the default), legacy entries are still filtered
+to installed units, so absent services are not monitored.
+
 Then restart the service and re-enable the timer:
 
 ```bash
@@ -522,7 +540,8 @@ sudo ./uninstall.sh
   `SERVICE_PROFILE=none` with explicit lists. Required services remain required.
 - **Service uses a non-standard or versioned unit name**: common aliases
   (`ssh`/`sshd`, `apache2`/`httpd`/`apache`, `mysql`/`mariadb`/`mysqld`,
-  `exim`/`exim4`, `named`/`bind9`/`named-chroot`) resolve automatically, and
+  `exim`/`exim4`, `named`/`bind9`/`named-chroot`, `redis`/`redis-server`,
+  `powerdns`/`pdns`) resolve automatically, and
   `--check-config` shows the effective required/optional lists. If a service
   uses another unit name, set that explicit unit in `SERVICES_REQUIRED` or
   `SERVICES_OPTIONAL`; versioned `php-fpm` units are not guessed.

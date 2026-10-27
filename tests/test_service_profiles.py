@@ -20,6 +20,7 @@ def test_profile_names_exact():
             "plesk",
             "directadmin",
             "hestiacp",
+            "vestacp",
             "cloudpanel",
             "runcloud",
         }
@@ -35,6 +36,8 @@ def test_alias_groups_exact_order():
         ("mysql", "mariadb", "mysqld"),
         ("exim", "exim4"),
         ("named", "bind9", "named-chroot"),
+        ("redis", "redis-server"),
+        ("powerdns", "pdns"),
     )
 
 
@@ -108,10 +111,37 @@ def test_required_wins_over_optional_duplicate():
     assert optional == ["redis"]
 
 
-def test_alias_candidates_and_service_suffix():
-    assert alias_candidates("sshd") == ["ssh", "sshd"]
-    assert alias_candidates("httpd") == ["apache2", "httpd", "apache"]
-    assert alias_candidates("redis.service") == ["redis"]
+def test_alias_candidates_start_with_configured_name():
+    assert alias_candidates("sshd") == ["sshd", "ssh"]
+    assert alias_candidates("httpd") == ["httpd", "apache2", "apache"]
+    assert alias_candidates("redis.service") == ["redis", "redis-server"]
+    assert alias_candidates("redis-server") == ["redis-server", "redis"]
+    assert alias_candidates("powerdns") == ["powerdns", "pdns"]
+    assert alias_candidates("pdns") == ["pdns", "powerdns"]
+    assert alias_candidates("custom") == ["custom"]
+
+
+def test_vestacp_defaults_require_vesta():
+    required, optional = resolve_targets("vestacp", None)
+    assert required == ["vesta"]
+    assert optional == [
+        "nginx",
+        "apache2",
+        "exim",
+        "dovecot",
+        "mysql",
+        "named",
+        "vsftpd",
+        "php-fpm",
+        "redis",
+    ]
+
+
+def test_auto_detected_vestacp_requires_vesta():
+    required, optional = resolve_targets("auto", "VestaCP")
+    assert required == ["vesta"]
+    assert "hestia" not in required
+    assert "nginx" in optional
 
 
 def test_panel_to_profile_unknown_is_standalone():

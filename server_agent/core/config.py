@@ -112,7 +112,9 @@ class Config:
     )
     services: List[str] = field(default_factory=lambda: _csv("SERVICES"))
     alert_on_missing_service: bool = _bool("ALERT_ON_MISSING_SERVICE", False)
-    service_profile: str = os.getenv("SERVICE_PROFILE", "auto").strip().lower()
+    service_profile: str = field(
+        default_factory=lambda: _env_str("SERVICE_PROFILE", "auto").lower()
+    )
     services_required: List[str] = field(default_factory=lambda: _csv("SERVICES_REQUIRED"))
     services_optional: List[str] = field(default_factory=lambda: _csv("SERVICES_OPTIONAL"))
     service_failure_threshold: int = _int("SERVICE_FAILURE_THRESHOLD", 2)
@@ -346,7 +348,7 @@ class Config:
         ):
             for value in values:
                 name = value.strip()
-                if name and not _SERVICE_UNIT_RE.match(name):
+                if name and not _SERVICE_UNIT_RE.fullmatch(name):
                     errors.append(f"{label} contains an invalid systemd unit name: {value}")
         web_logs = self.resolved_web_error_logs()
         if len(web_logs) > 12:

@@ -92,7 +92,7 @@ SERVICES_REQUIRED=httpd,mysql,exim,dovecot,cpanel
 SERVICES_OPTIONAL=redis,php-fpm
 ```
 
-Legacy example (unchanged behavior):
+Legacy example (still takes precedence over profiles):
 
 ```env
 SERVICES=nginx,mysql
@@ -103,7 +103,8 @@ AUTO_DETECT_SERVICES=true
 
 Profile names match `EnvironmentDetector` panel names, lowercased:
 `standalone`, `cpanel`, `cyberpanel`, `aapanel`, `plesk`, `directadmin`,
-`hestiacp`, `cloudpanel`, `runcloud`, `none`.
+`hestiacp`, `vestacp`, `cloudpanel`, `runcloud`, `none`. The `vestacp` and
+`vesta` panel tokens both select the `vestacp` profile.
 
 | Profile | Required | Optional |
 | :--- | :--- | :--- |
@@ -114,14 +115,15 @@ Profile names match `EnvironmentDetector` panel names, lowercased:
 | plesk | sw-cp-server, sw-engine, psa | nginx, apache2, httpd, postfix, dovecot, mysql, redis, php-fpm |
 | directadmin | directadmin | httpd, nginx, apache2, exim, dovecot, mysql, php-fpm, redis |
 | hestiacp | hestia | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
+| vestacp | vesta | nginx, apache2, exim, dovecot, mysql, named, vsftpd, php-fpm, redis |
 | cloudpanel | clp-nginx, clp-php-fpm | mysql, redis |
 | runcloud | nginx | php-fpm, mysql, redis |
 | none | _(empty)_ | _(empty)_ |
 
 Alias groups absorb the variants: `mysql` resolves to `mariadb`/`mysqld`,
-`named` to `bind9`, `exim` to `exim4`, `apache2` to `httpd`, `ssh` to `sshd`.
-List only one canonical member per alias group in a profile to avoid
-duplicate checks.
+`named` to `bind9`, `exim` to `exim4`, `apache2` to `httpd`, `ssh` to `sshd`,
+`redis` to `redis-server`, `powerdns` to `pdns`. List only one canonical member
+per alias group in a profile to avoid duplicate checks.
 
 Rationale: required entries are the panel's control plane plus its core data
 and mail services. Alternative web servers and optional tooling are listed as
@@ -140,11 +142,13 @@ Alias groups (first resolvable member wins):
 - `mysql`, `mariadb`, `mysqld`
 - `exim`, `exim4`
 - `named`, `bind9`, `named-chroot`
+- `redis`, `redis-server`
+- `powerdns`, `pdns`
 
 Resolution for a configured name:
 
-1. Build candidates: the name itself, then alias peers, each with and without
-   a `.service` suffix.
+1. Build candidates: the configured name itself first, then the remaining alias
+   peers, each with and without a `.service` suffix.
 2. For each candidate, if a unit file exists under
    `/etc/systemd/system`, `/lib/systemd/system`, or
    `/usr/lib/systemd/system`, treat it as installed.
@@ -230,8 +234,10 @@ with the existing validation.
 - Writes `SERVICE_PROFILE=auto` (commented explanation) on new installs and
   preserves an existing value on update.
 - Keeps `SERVICES=` present but commented as the legacy override.
-- `--print-platform` prints the resolved profile and the required/optional
-  candidates.
+- `--print-platform` is a pre-install hint, not a profile resolver: it reports
+  the detected platform profile and states that the service profile is resolved
+  at runtime. Use `--check-config` after install for the resolved
+  required/optional lists.
 
 `--check-config` after `Configuration OK` prints:
 
@@ -245,13 +251,20 @@ This uses `EnvironmentDetector.detect()` when auto-detection is enabled.
 
 ## Backward compatibility
 
-- Existing `SERVICES` behavior is unchanged, including
-  `AUTO_DETECT_SERVICES=true`.
+- A non-empty legacy `SERVICES` list still takes precedence and keeps
+  `AUTO_DETECT_SERVICES` filtering, so upgrading an existing installation does
+  not switch it to profiles. Remove or empty `SERVICES` to opt in.
+- `SERVICE_PROFILE=none` and `SERVICES_REQUIRED`/`SERVICES_OPTIONAL` are ignored
+  while legacy `SERVICES` is non-empty.
+- Legacy monitoring severity semantics changed. With
+  `AUTO_DETECT_SERVICES=false`, a missing legacy service is now `CRITICAL`
+  (previously it was skipped when `ALERT_ON_MISSING_SERVICE=false`); `unknown`
+  is now `WARNING`; and a non-active service alerts after
+  `SERVICE_FAILURE_THRESHOLD` consecutive checks.
 - Existing `state.json` files load with the new `service_failures` section
   defaulted to `{}`.
-- Existing env files without `SERVICE_PROFILE` default to `auto`; this may add
-  panel-profile coverage on the next cycle. This is the intended improvement
-  and is documented in the upgrade notes.
+- Existing env files without `SERVICE_PROFILE` default to `auto`, but that only
+  affects installations whose `SERVICES` list is empty.
 - `ALERT_ON_MISSING_SERVICE` keeps its role for `unknown` and optional
   services.
 
@@ -263,8 +276,8 @@ New and updated tests:
   `none`, legacy `SERVICES` override, required/optional env overrides,
   dedupe, required-wins, invalid profile validation.
 - alias resolution: `ssh`/`sshd`, `apache2`/`httpd`, `mysql`/`mariadb`/`mysqld`,
-  `exim`/`exim4`, unit-file hit vs `systemctl show`, not-found caching,
-  systemctl unavailable -> unknown.
+  `exim`/`exim4`, `redis`/`redis-server`, `powerdns`/`pdns`, unit-file hit vs
+  `systemctl show`, not-found caching, systemctl unavailable -> unknown.
 - health severity: required missing CRITICAL, optional missing skip, required
   inactive CRITICAL after threshold, `failed` immediate, optional inactive
   WARNING, unknown required WARNING, recovery INFO, threshold reset,

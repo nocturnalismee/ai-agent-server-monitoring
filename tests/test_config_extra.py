@@ -391,6 +391,11 @@ def test_service_profile_accepts_known_profiles():
         _cfg(service_profile=name).validate()
 
 
+def test_service_profile_env_strips_quotes(monkeypatch):
+    monkeypatch.setenv("SERVICE_PROFILE", "  'cpanel'  ")
+    assert Config().service_profile == "cpanel"
+
+
 def test_service_profile_rejects_unknown():
     with pytest.raises(ValueError, match="SERVICE_PROFILE"):
         _cfg(service_profile="bogus").validate()

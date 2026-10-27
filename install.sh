@@ -37,13 +37,11 @@ detect_profile() {
     WEB_ERROR_LOGS=/etc/apache2/logs/error_log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=httpd,sshd
   elif [[ -d /usr/local/psa || -d /etc/psa ]]; then
     PLATFORM_PROFILE=plesk
     WEB_ERROR_LOGS=/var/log/sw-cp-server/error_log,/var/log/plesk/panel.log,/var/log/nginx/error.log,/var/log/httpd/error_log,/var/log/apache2/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=sw-cp-server,nginx,httpd,apache2,sshd,ssh
   elif [[ -d /usr/local/CyberCP ]]; then
     PLATFORM_PROFILE=cyberpanel
     # Keep panel defaults outside /home: ProtectHome=true deliberately prevents
@@ -51,31 +49,26 @@ detect_profile() {
     WEB_ERROR_LOGS=/usr/local/lsws/logs/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=lsws,lscpd,sshd,ssh
   elif [[ -d /usr/local/directadmin ]]; then
     PLATFORM_PROFILE=directadmin
     WEB_ERROR_LOGS=/var/log/directadmin/error.log,/var/log/httpd/error_log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=directadmin,httpd,nginx,sshd,ssh
   elif [[ -d /www/server/panel ]]; then
     PLATFORM_PROFILE=aapanel
     WEB_ERROR_LOGS=/www/server/nginx/logs/error.log,/www/server/apache/logs/error_log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=nginx,httpd,apache2,sshd,ssh
   elif is_rhel_family; then
     PLATFORM_PROFILE=rhel
     WEB_ERROR_LOGS=/var/log/httpd/error_log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/secure
     AUTH_LOG_SECONDARY=/var/log/auth.log
-    SERVICE_CANDIDATES=httpd,sshd
   elif is_debian_family; then
     PLATFORM_PROFILE=debian
     WEB_ERROR_LOGS=/var/log/apache2/error.log,/var/log/nginx/error.log
     AUTH_LOG_PRIMARY=/var/log/auth.log
     AUTH_LOG_SECONDARY=/var/log/secure
-    SERVICE_CANDIDATES=apache2,ssh
   else
     die "Unsupported operating system: ID=$OS_ID ID_LIKE=$OS_LIKE"
   fi
@@ -92,25 +85,6 @@ detect_profile() {
     AUTH_LOG_SECONDARY=/var/log/auth.log
     KERNEL_LOG_PRIMARY=/var/log/messages
     KERNEL_LOG_SECONDARY=/var/log/dmesg
-  fi
-}
-
-resolve_default_services() {
-  local service
-  local -a candidates=()
-  local -a active_services=()
-  IFS=',' read -r -a candidates <<< "$SERVICE_CANDIDATES"
-  if command -v systemctl >/dev/null 2>&1; then
-    for service in "${candidates[@]}"; do
-      if systemctl is-active --quiet "$service" 2>/dev/null; then
-        active_services+=("$service")
-      fi
-    done
-  fi
-  if [[ ${#active_services[@]} -gt 0 ]]; then
-    DEFAULT_SERVICES=$(IFS=,; echo "${active_services[*]}")
-  else
-    DEFAULT_SERVICES=$SERVICE_CANDIDATES
   fi
 }
 
@@ -213,11 +187,9 @@ check_log_access() {
 print_profile() {
   load_os_release
   detect_profile
-  resolve_default_services
   printf 'profile=%s\nos_id=%s\nos_like=%s\nweb_error_logs=%s\nauth_log=%s\nkernel_log=%s\n' \
     "$PLATFORM_PROFILE" "$OS_ID" "$OS_LIKE" "$WEB_ERROR_LOGS" "$AUTH_LOG_PRIMARY" "$KERNEL_LOG_PRIMARY"
-  echo "service profile: auto (per-panel at runtime)"
-  echo "service candidates : $DEFAULT_SERVICES"
+  echo "service profile : auto (resolved at runtime; verify with --check-config after install)"
 }
 
 main() {
@@ -235,7 +207,6 @@ main() {
 
   load_os_release
   detect_profile
-  resolve_default_services
   note "Detected platform profile: $PLATFORM_PROFILE (ID=$OS_ID)"
   if ! select_python; then
     note "Python 3.9+ was not found; installing the OS Python packages."

@@ -30,8 +30,8 @@ def _incident(kind, *, metric=None, service=None, title="incident"):
     )
 
 
-def _completed(stdout=""):
-    return SimpleNamespace(stdout=stdout, returncode=0)
+def _completed(stdout="", stderr=""):
+    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
 
 
 def test_dispatch_service_uses_journal(monkeypatch):
@@ -122,6 +122,44 @@ def test_service_journal_missing_binary_returns_empty(monkeypatch):
 
     monkeypatch.setattr(evidence_module.subprocess, "run", missing)
     assert EvidenceCollector()._collect_service_journal("nginx") == ""
+
+
+def test_service_status_uses_stderr_when_stdout_empty(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[0] == "journalctl":
+            return _completed("")
+        return _completed("", "Unit nginx.service could not be found.\n")
+
+    monkeypatch.setattr(evidence_module.subprocess, "run", fake_run)
+    text = EvidenceCollector()._collect_service_journal("nginx")
+    assert "--- systemctl status nginx ---" in text
+    assert "could not be found" in text
+
+
+def test_service_status_concatenates_stdout_and_stderr(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[0] == "journalctl":
+            return _completed("")
+        return _completed("stdout-line\n", "stderr-line\n")
+
+    monkeypatch.setattr(evidence_module.subprocess, "run", fake_run)
+    text = EvidenceCollector()._collect_service_journal("nginx")
+    assert "stdout-line" in text
+    assert "stderr-line" in text
+
+
+def test_service_status_keeps_first_max_lines_of_combined_output(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[0] == "journalctl":
+            return _completed("")
+        return _completed("out-1\nout-2\n", "err-1\nerr-2\n")
+
+    monkeypatch.setattr(evidence_module.subprocess, "run", fake_run)
+    text = EvidenceCollector(max_lines=3)._collect_service_journal("nginx")
+    assert "out-1" in text
+    assert "out-2" in text
+    assert "err-1" in text
+    assert "err-2" not in text
 
 
 def test_top_cpu_limits_to_six_lines(monkeypatch):
@@ -236,6 +274,26 @@ def test_service_evidence_rejects_unsafe_unit(monkeypatch):
         summary="",
         fingerprint="service:bad",
         details={"service": "mysql", "unit": "mysql; rm -rf /"},
+    )
+    assert collector.collect(incident) == ""
+    assert calls == []
+
+
+def test_service_evidence_rejects_unit_with_trailing_newline(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        evidence_module.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command),
+    )
+    collector = EvidenceCollector()
+    incident = Incident(
+        kind="service",
+        severity="CRITICAL",
+        title="bad",
+        summary="",
+        fingerprint="service:bad",
+        details={"service": "mysql", "unit": "mysql\n"},
     )
     assert collector.collect(incident) == ""
     assert calls == []

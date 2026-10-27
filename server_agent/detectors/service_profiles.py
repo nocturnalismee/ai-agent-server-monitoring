@@ -70,6 +70,20 @@ PROFILES: Dict[str, ServiceProfile] = {
             "redis",
         ),
     ),
+    "vestacp": ServiceProfile(
+        ("vesta",),
+        (
+            "nginx",
+            "apache2",
+            "exim",
+            "dovecot",
+            "mysql",
+            "named",
+            "vsftpd",
+            "php-fpm",
+            "redis",
+        ),
+    ),
     "cloudpanel": ServiceProfile(("clp-nginx", "clp-php-fpm"), ("mysql", "redis")),
     "runcloud": ServiceProfile(("nginx",), ("php-fpm", "mysql", "redis")),
     "none": ServiceProfile(),
@@ -83,6 +97,8 @@ ALIAS_GROUPS: Tuple[Tuple[str, ...], ...] = (
     ("mysql", "mariadb", "mysqld"),
     ("exim", "exim4"),
     ("named", "bind9", "named-chroot"),
+    ("redis", "redis-server"),
+    ("powerdns", "pdns"),
 )
 
 _PANEL_TO_PROFILE: Tuple[Tuple[str, str], ...] = (
@@ -94,7 +110,8 @@ _PANEL_TO_PROFILE: Tuple[Tuple[str, str], ...] = (
     ("plesk", "plesk"),
     ("directadmin", "directadmin"),
     ("hestiacp", "hestiacp"),
-    ("vestacp", "hestiacp"),
+    ("vestacp", "vestacp"),
+    ("vesta", "vestacp"),
     ("cloudpanel", "cloudpanel"),
     ("runcloud", "runcloud"),
 )
@@ -129,7 +146,7 @@ def alias_candidates(name: str) -> List[str]:
     lowered = base.lower()
     for group in ALIAS_GROUPS:
         if lowered in group:
-            return list(group)
+            return [base] + [peer for peer in group if peer != lowered]
     return [base]
 
 

@@ -342,15 +342,19 @@ class Agent:
 
 
 def _print_service_plan(cfg) -> None:
+    legacy = list(cfg.services)
+    if legacy and getattr(cfg, "auto_detect_services", True):
+        legacy = ServiceDetector(None).filter_installed_services(legacy)
     panel = None
-    if getattr(cfg, "auto_detect_environment", False):
+    if (
+        cfg.service_profile == "auto"
+        and not legacy
+        and getattr(cfg, "auto_detect_environment", False)
+    ):
         try:
             panel = EnvironmentDetector(None).detect().panel
         except Exception:
             panel = None
-    legacy = list(cfg.services)
-    if legacy and getattr(cfg, "auto_detect_services", True):
-        legacy = ServiceDetector(None).filter_installed_services(legacy)
     required, optional = resolve_targets(
         cfg.service_profile,
         panel,
