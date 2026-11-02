@@ -429,3 +429,76 @@ def test_required_and_optional_overlap_is_rejected():
 def test_invalid_service_unit_name_is_rejected():
     with pytest.raises(ValueError, match="invalid systemd unit name"):
         _cfg(services_required=["nginx; rm -rf /"]).validate()
+
+
+def test_normalized_clamps_aggressive_intervals_and_warns():
+    cfg, warnings = _valid_config(health_interval=1, log_interval=1).normalized()
+
+    assert cfg.health_interval == 10
+    assert cfg.log_interval == 2
+    assert any("HEALTH_INTERVAL" in warning for warning in warnings)
+    assert any("LOG_INTERVAL" in warning for warning in warnings)
+    cfg.validate()
+
+
+def test_normalized_clamps_log_limits():
+    cfg, warnings = _valid_config(
+        max_log_lines_per_cycle=99999,
+        max_log_line_chars=1,
+        max_log_sample_chars=99999,
+    ).normalized()
+
+    assert cfg.max_log_lines_per_cycle == 10000
+    assert cfg.max_log_line_chars == 256
+    assert cfg.max_log_sample_chars == 4096
+    assert len(warnings) == 3
+    cfg.validate()
+
+
+def test_normalized_clamps_resource_and_load_ordering():
+    cfg, warnings = _valid_config(
+        cpu_warning=101.0,
+        cpu_critical=-1.0,
+        memory_warning=90.0,
+        memory_critical=80.0,
+        load_warning_per_cpu=3.0,
+        load_critical_per_cpu=1.0,
+    ).normalized()
+
+    assert 0 <= cfg.cpu_warning <= cfg.cpu_critical <= 100
+    assert 0 <= cfg.memory_warning <= cfg.memory_critical <= 100
+    assert 0 <= cfg.load_warning_per_cpu <= cfg.load_critical_per_cpu
+    assert warnings
+    cfg.validate()
+
+
+def test_normalized_clamps_timeouts_ai_and_service_limits():
+    cfg, _ = _valid_config(
+        smtp_timeout=0,
+        telegram_timeout=0,
+        ai_timeout_seconds=0,
+        ai_max_output_tokens=99999,
+        ai_rate_limit_per_minute=0,
+        alert_rate_limit_per_minute=9999,
+        service_failure_threshold=99,
+        ssh_failure_tracked_ips_max=0,
+        heartbeat_stale_seconds=1,
+    ).normalized()
+
+    assert cfg.smtp_timeout == 1
+    assert cfg.telegram_timeout == 1
+    assert cfg.ai_timeout_seconds == 1
+    assert cfg.ai_max_output_tokens == 8192
+    assert cfg.ai_rate_limit_per_minute == 1
+    assert cfg.alert_rate_limit_per_minute == 600
+    assert cfg.service_failure_threshold == 10
+    assert cfg.ssh_failure_tracked_ips_max == 1
+    assert cfg.heartbeat_stale_seconds == 60
+    cfg.validate()
+
+
+def test_normalized_invalid_alert_channel_still_fails_validation():
+    cfg, _ = _valid_config(alert_channel="slack").normalized()
+
+    with pytest.raises(ValueError, match="ALERT_CHANNEL must be email or telegram"):
+        cfg.validate()

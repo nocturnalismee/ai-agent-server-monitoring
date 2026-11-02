@@ -27,6 +27,9 @@ class FakeConfig:
         self.auto_detect_environment = auto_detect_environment
         self.auto_detect_services = auto_detect_services
 
+    def normalized(self):
+        return self, list(getattr(self, "warnings", []))
+
     def validate(self):
         if self._error:
             raise ValueError(self._error)
@@ -297,3 +300,12 @@ def test_status_missing_file_reports_path_without_config(monkeypatch, capsys, tm
     assert agent_module.main() == 1
     err = capsys.readouterr().err
     assert f"No status available at {tmp_path / 'status.json'}" in err
+
+
+def test_main_prints_config_normalization_warnings(monkeypatch, capsys):
+    cfg = _patch_config(monkeypatch)
+    cfg.warnings = ["HEALTH_INTERVAL=1 is below minimum 10; using 10"]
+    monkeypatch.setattr(sys, "argv", ["prog", "--check-config"])
+
+    assert agent_module.main() == 0
+    assert "HEALTH_INTERVAL=1" in capsys.readouterr().err

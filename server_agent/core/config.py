@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -265,6 +265,108 @@ class Config:
             self.kernel_log_rhel,
         ]
         return list(dict.fromkeys(path for path in paths if path))
+
+    def normalized(self) -> Tuple["Config", List[str]]:
+        warnings: List[str] = []
+        changes: Dict[str, Any] = {}
+
+        def _fmt(value: Any) -> str:
+            if isinstance(value, float):
+                return f"{value:g}"
+            return str(value)
+
+        def _clamp(name: str, value: Any, low: Any, high: Any) -> Any:
+            if value < low:
+                warnings.append(
+                    f"{name}={_fmt(value)} is below the minimum {_fmt(low)}; "
+                    f"using {_fmt(low)}"
+                )
+                return low
+            if high is not None and value > high:
+                warnings.append(
+                    f"{name}={_fmt(value)} is above the maximum {_fmt(high)}; "
+                    f"using {_fmt(high)}"
+                )
+                return high
+            return value
+
+        def _clamp_int(name: str, low: int, high: Optional[int]) -> None:
+            value = int(getattr(self, name.lower()))
+            clamped = _clamp(name, value, low, high)
+            if clamped != value:
+                changes[name.lower()] = clamped
+
+        _clamp_int("HEALTH_INTERVAL", 10, None)
+        _clamp_int("LOG_INTERVAL", 2, None)
+        _clamp_int("HEARTBEAT_STALE_SECONDS", 60, None)
+        _clamp_int("MAX_LOG_LINES_PER_CYCLE", 1, 10000)
+        _clamp_int("MAX_LOG_LINE_CHARS", 256, 65536)
+        _clamp_int("MAX_LOG_SAMPLE_CHARS", 100, 4096)
+        _clamp_int("SSH_FAILURE_TRACKED_IPS_MAX", 1, 100000)
+        _clamp_int("SERVICE_FAILURE_THRESHOLD", 1, 10)
+        _clamp_int("SMTP_TIMEOUT", 1, None)
+        _clamp_int("TELEGRAM_TIMEOUT", 1, None)
+        _clamp_int("AI_TIMEOUT_SECONDS", 1, None)
+        _clamp_int("AI_MAX_OUTPUT_TOKENS", 1, 8192)
+        _clamp_int("AI_RATE_LIMIT_PER_MINUTE", 1, 120)
+        _clamp_int("ALERT_RATE_LIMIT_PER_MINUTE", 0, 600)
+
+        for warning_field, critical_field in (
+            ("cpu_warning", "cpu_critical"),
+            ("memory_warning", "memory_critical"),
+            ("disk_warning", "disk_critical"),
+        ):
+            warning_value = _clamp(
+                warning_field.upper(),
+                float(getattr(self, warning_field)),
+                0.0,
+                100.0,
+            )
+            critical_value = _clamp(
+                critical_field.upper(),
+                float(getattr(self, critical_field)),
+                0.0,
+                100.0,
+            )
+            if warning_value > critical_value:
+                warnings.append(
+                    f"{warning_field.upper()}={_fmt(warning_value)} exceeds "
+                    f"{critical_field.upper()}={_fmt(critical_value)}; "
+                    f"using {_fmt(critical_value)}"
+                )
+                warning_value = critical_value
+            if warning_value != getattr(self, warning_field):
+                changes[warning_field] = warning_value
+            if critical_value != getattr(self, critical_field):
+                changes[critical_field] = critical_value
+
+        load_warning = _clamp(
+            "LOAD_WARNING_PER_CPU",
+            float(self.load_warning_per_cpu),
+            0.0,
+            None,
+        )
+        load_critical = _clamp(
+            "LOAD_CRITICAL_PER_CPU",
+            float(self.load_critical_per_cpu),
+            0.0,
+            None,
+        )
+        if load_warning > load_critical:
+            warnings.append(
+                f"LOAD_WARNING_PER_CPU={_fmt(load_warning)} exceeds "
+                f"LOAD_CRITICAL_PER_CPU={_fmt(load_critical)}; "
+                f"using {_fmt(load_critical)}"
+            )
+            load_warning = load_critical
+        if load_warning != self.load_warning_per_cpu:
+            changes["load_warning_per_cpu"] = load_warning
+        if load_critical != self.load_critical_per_cpu:
+            changes["load_critical_per_cpu"] = load_critical
+
+        if not changes:
+            return self, warnings
+        return replace(self, **changes), warnings
 
     def validate(self) -> None:
         errors = []

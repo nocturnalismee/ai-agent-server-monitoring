@@ -5,9 +5,15 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 
 class StateStore:
@@ -16,9 +22,11 @@ class StateStore:
         state_dir: Path,
         ssh_failure_tracked_ips_max: int = 1000,
         ssh_failure_persist_threshold: int = 5,
+        filename: str = "state.json",
     ):
         self.state_dir = state_dir
-        self.path = state_dir / "state.json"
+        self.path = state_dir / filename
+        self.lock_path = state_dir / ".state.lock"
         self.lock = threading.RLock()
         self.ssh_failure_tracked_ips_max = ssh_failure_tracked_ips_max
         self.ssh_failure_persist_threshold = ssh_failure_persist_threshold
@@ -30,6 +38,31 @@ class StateStore:
             pass
         self.data: Dict[str, Any] = self._load()
 
+    @contextmanager
+    def _file_lock(self, exclusive: bool):
+        if fcntl is None:
+            yield
+            return
+        handle = None
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            handle = open(self.lock_path, "a+")
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(handle.fileno(), operation)
+        except OSError:
+            if handle is not None:
+                handle.close()
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
+
     def _load(self) -> Dict[str, Any]:
         empty = {
             "files": {},
@@ -40,7 +73,8 @@ class StateStore:
             "service_failures": {},
         }
         try:
-            data = json.loads(self.path.read_text())
+            with self._file_lock(False):
+                data = json.loads(self.path.read_text())
             if not isinstance(data, dict):
                 return empty
             for key in empty:
@@ -54,17 +88,18 @@ class StateStore:
 
     def save(self) -> None:
         with self.lock:
-            self.state_dir.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix=".state-", dir=str(self.state_dir))
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(self.data, f, indent=2, sort_keys=True)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.path)
-            finally:
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
+            with self._file_lock(True):
+                self.state_dir.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(prefix=".state-", dir=str(self.state_dir))
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(self.data, f, indent=2, sort_keys=True)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, self.path)
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
 
     def can_alert(self, fingerprint: str, cooldown: int) -> bool:
         now = time.time()

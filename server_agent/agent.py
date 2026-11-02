@@ -23,6 +23,7 @@ from .core.config import Config
 from .core.logging_setup import setup_logging
 from .core.models import Incident
 from .core.redaction import sanitize_incident, sanitize_text
+from .core.spool import IncidentSpool
 from .core.state import StateStore
 from .detectors.environment import EnvironmentDetector
 from .detectors.service_profiles import profile_name, resolve_targets
@@ -38,6 +39,7 @@ from .notifiers.telegram import TelegramNotifier
 _HEARTBEAT_WRITE_SECONDS = 30.0
 _HEARTBEAT_FINGERPRINT = "agent:heartbeat"
 _ALERT_RATE_WINDOW_SECONDS = 60.0
+_SPOOL_RETRY_SECONDS = 30.0
 _SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
 _DEFAULT_STATE_DIR = Path("/var/lib/server-ai-agent")
 _COUNTER_NAMES = ("seen", "sent", "suppressed", "dropped", "delivery_errors")
@@ -76,6 +78,32 @@ def _severity_at_least(severity: str, minimum: str) -> bool:
     return _SEVERITY_RANK.get(severity.upper(), 0) >= _SEVERITY_RANK.get(
         minimum.upper(), 2
     )
+
+
+def _incident_from_dict(data) -> Incident:
+    if not isinstance(data, dict):
+        raise ValueError("invalid spooled incident")
+    values = {
+        key: data[key]
+        for key in (
+            "kind",
+            "severity",
+            "title",
+            "summary",
+            "fingerprint",
+            "details",
+            "timestamp",
+            "ai_analysis",
+            "evidence",
+        )
+        if key in data
+    }
+    for key in ("kind", "severity", "title", "summary", "fingerprint"):
+        if not isinstance(values.get(key), str):
+            raise ValueError(f"spooled incident is missing {key}")
+    if not isinstance(values.get("details"), dict):
+        values["details"] = {}
+    return Incident(**values)
 
 
 def _build_notifier(cfg, log, metadata=None):
@@ -134,11 +162,21 @@ def _heartbeat_is_stale(
 
 def _check_heartbeat(cfg: Config) -> int:
     """One-shot watchdog check used by systemd. Alerts when the agent is stale."""
+    cfg, warnings = cfg.normalized()
+    for warning in warnings:
+        print(f"Configuration warning: {warning}", file=sys.stderr)
+    cfg.validate()
     log = setup_logging(cfg.log_file, cfg.log_level, cfg.log_format)
     state = StateStore(
         cfg.state_dir,
         cfg.ssh_failure_tracked_ips_max,
         cfg.ssh_failed_threshold,
+    )
+    watchdog_state = StateStore(
+        cfg.state_dir,
+        cfg.ssh_failure_tracked_ips_max,
+        cfg.ssh_failed_threshold,
+        filename="watchdog-alert.json",
     )
     heartbeat = state.heartbeat()
     age = _heartbeat_age_seconds(heartbeat)
@@ -151,7 +189,9 @@ def _check_heartbeat(cfg: Config) -> int:
         if age is None
         else f"{age:.0f}s old (limit {cfg.heartbeat_stale_seconds}s)"
     )
-    if not state.can_alert(_HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds):
+    if not watchdog_state.can_alert(
+        _HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds
+    ):
         print(f"Heartbeat stale ({detail}); alert already sent recently.")
         return 0
 
@@ -184,7 +224,9 @@ def _check_heartbeat(cfg: Config) -> int:
     if not delivered:
         print(f"Heartbeat stale ({detail}); failed to send alert.", file=sys.stderr)
         return 1
-    state.mark_alert_sent(_HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds)
+    watchdog_state.mark_alert_sent(
+        _HEARTBEAT_FINGERPRINT, cfg.alert_cooldown_seconds
+    )
     print(f"Heartbeat stale ({detail}); alert sent.")
     return 0
 
@@ -208,6 +250,7 @@ class Agent:
             cfg.ssh_failure_tracked_ips_max,
             cfg.ssh_failed_threshold,
         )
+        self.spool = IncidentSpool(cfg.state_dir, logger=self.log)
         self.tailer = FileTailer(self.state, self.log)
         self.evidence_collector = (
             EvidenceCollector(max_lines=getattr(cfg, "evidence_lines", 15), logger=self.log)
@@ -287,21 +330,39 @@ class Agent:
             self._alert_queue.put_nowait(incident)
         except queue.Full:
             self._count("dropped")
+            self._spool_incident(incident)
             self.log.warning(
                 "Alert queue full; dropping incident: %s", incident.fingerprint
             )
 
     def _alert_worker_loop(self):
+        last_spool_retry = time.monotonic()
         while True:
-            item = self._alert_queue.get()
+            got_item = False
+            item = None
+            try:
+                item = self._alert_queue.get(timeout=1.0)
+                got_item = True
+            except queue.Empty:
+                pass
             try:
                 if item is self._alert_stop:
                     return
-                self._process(item)
+                if got_item:
+                    self._process(item)
             except Exception:
                 self.log.exception("Alert dispatch error")
             finally:
-                self._alert_queue.task_done()
+                if got_item:
+                    self._alert_queue.task_done()
+
+            now = time.monotonic()
+            if now - last_spool_retry >= _SPOOL_RETRY_SECONDS:
+                last_spool_retry = now
+                try:
+                    self._retry_spooled()
+                except Exception:
+                    self.log.exception("Spool retry error")
 
     def _alert_rate_limited(self) -> bool:
         limit = int(getattr(self.cfg, "alert_rate_limit_per_minute", 0) or 0)
@@ -338,6 +399,7 @@ class Agent:
 
         if self._alert_rate_limited():
             self._count("dropped")
+            self._spool_incident(incident)
             self.log.warning(
                 "Alert rate limit reached; dropping alert: %s", incident.fingerprint
             )
@@ -362,12 +424,22 @@ class Agent:
 
         # A failed delivery must not suppress the next alert.
         self._record_alert_send()
-        delivered = self.notifier.send(external_incident)
+        delivered = False
+        delivery_error = False
+        try:
+            delivered = bool(self.notifier.send(external_incident))
+        except Exception:
+            delivery_error = True
+            self.log.exception("Primary notification failed")
         if self.escalation_notifier is not None and _severity_at_least(
             incident.severity, self.cfg.escalation_min_severity
         ):
-            if self.escalation_notifier.send(external_incident):
-                delivered = True
+            try:
+                if self.escalation_notifier.send(external_incident):
+                    delivered = True
+            except Exception:
+                delivery_error = True
+                self.log.exception("Escalation notification failed")
         if delivered:
             self._count("sent")
             self.state.mark_alert_sent(
@@ -375,6 +447,63 @@ class Agent:
             )
         else:
             self._count("delivery_errors")
+            self._spool_incident(external_incident)
+        if delivery_error and delivered:
+            self._count("delivery_errors")
+
+    def _spool_incident(self, incident) -> None:
+        spool = getattr(self, "spool", None)
+        if spool is None:
+            return
+        try:
+            spool.add(sanitize_incident(incident))
+        except Exception:
+            debug = getattr(getattr(self, "log", None), "debug", None)
+            if debug is not None:
+                debug("Failed to spool incident", exc_info=True)
+
+    def _retry_spooled(self) -> None:
+        spool = getattr(self, "spool", None)
+        if spool is None:
+            return
+        for key, payload, _attempts in spool.due():
+            try:
+                incident = _incident_from_dict(payload)
+            except Exception:
+                debug = getattr(getattr(self, "log", None), "debug", None)
+                if debug is not None:
+                    debug("Discarding corrupt spooled incident: %s", key)
+                spool.remove(key)
+                continue
+
+            delivered = False
+            delivery_error = False
+            try:
+                delivered = bool(self.notifier.send(incident))
+            except Exception:
+                delivery_error = True
+                self.log.exception("Spooled notification failed")
+            if self.escalation_notifier is not None and _severity_at_least(
+                incident.severity, self.cfg.escalation_min_severity
+            ):
+                try:
+                    if self.escalation_notifier.send(incident):
+                        delivered = True
+                except Exception:
+                    delivery_error = True
+                    self.log.exception("Spooled escalation failed")
+
+            if delivered:
+                self._count("sent")
+                self.state.mark_alert_sent(
+                    incident.fingerprint, self.cfg.alert_cooldown_seconds
+                )
+                spool.remove(key)
+            else:
+                self._count("delivery_errors")
+                spool.mark_attempt(key)
+            if delivery_error and delivered:
+                self._count("delivery_errors")
 
     def drain(self):
         """Block until every queued incident has been processed."""
@@ -405,42 +534,46 @@ class Agent:
         return round((time.monotonic() - started) * 1000, 2)
 
     def _write_status(self) -> None:
-        cfg = getattr(self, "cfg", None)
-        state_dir = getattr(cfg, "state_dir", None) if cfg is not None else None
-        if state_dir is None:
-            return
-        now = datetime.now(timezone.utc).isoformat()
-        durations = self._durations()
-        payload = {
-            "version": __version__,
-            "server_name": cfg.server_name,
-            "updated_at": now,
-            "last_cycle_ts": now,
-            "cycle_durations_ms": {
-                "health": durations.get("health", 0.0),
-                "logs": durations.get("logs", 0.0),
-            },
-            "queue_depth": int(self._alert_queue.qsize()),
-            "counters": self._counter_snapshot(),
-        }
         try:
+            cfg = getattr(self, "cfg", None)
+            state_dir = getattr(cfg, "state_dir", None) if cfg is not None else None
+            if state_dir is None:
+                return
+            now = datetime.now(timezone.utc).isoformat()
+            durations = self._durations()
+            payload = {
+                "version": __version__,
+                "server_name": cfg.server_name,
+                "updated_at": now,
+                "last_cycle_ts": now,
+                "cycle_durations_ms": {
+                    "health": durations.get("health", 0.0),
+                    "logs": durations.get("logs", 0.0),
+                },
+                "queue_depth": int(self._alert_queue.qsize()),
+                "counters": self._counter_snapshot(),
+            }
             _atomic_write_json(Path(state_dir) / "status.json", payload)
-        except OSError:
-            self.log.debug("Failed to write status.json", exc_info=True)
+        except Exception:
+            debug = getattr(getattr(self, "log", None), "debug", None)
+            if debug is not None:
+                debug("Failed to write status.json", exc_info=True)
 
     def run_once(self):
         try:
-            self.state.set_heartbeat()
-        except Exception:
-            self.log.exception("Failed to update heartbeat")
-        self.cycle_durations_ms = {
-            "health": self._run_group([("health", self.health)]),
-            "logs": self._run_group(
-                [("web", self.web), ("ssh", self.ssh), ("kernel", self.kernel)]
-            ),
-        }
-        self.drain()
-        self._write_status()
+            try:
+                self.state.set_heartbeat()
+            except Exception:
+                self.log.exception("Failed to update heartbeat")
+            self.cycle_durations_ms = {
+                "health": self._run_group([("health", self.health)]),
+                "logs": self._run_group(
+                    [("web", self.web), ("ssh", self.ssh), ("kernel", self.kernel)]
+                ),
+            }
+            self.drain()
+        finally:
+            self._write_status()
 
     def run(self):
         badge = f" [{self.metadata.badge()}]" if self.metadata else ""
@@ -539,6 +672,9 @@ def main():
 
     try:
         cfg = Config()
+        cfg, warnings = cfg.normalized()
+        for warning in warnings:
+            print(f"Configuration warning: {warning}", file=sys.stderr)
         cfg.validate()
     except Exception as exc:
         print(f"Configuration/startup error: {exc}", file=sys.stderr)

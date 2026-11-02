@@ -245,3 +245,36 @@ def test_clear_missing_service_counter_is_a_noop(tmp_path):
     state = StateStore(tmp_path)
     state.clear_service_failure("service:absent")
     assert state.service_failure_count("service:absent") == 0
+
+
+def test_custom_filename_isolates_state_file(tmp_path):
+    state = StateStore(tmp_path, filename="watchdog-alert.json")
+
+    state.mark_alert_sent("agent:heartbeat", cooldown=60)
+
+    assert (tmp_path / "watchdog-alert.json").exists()
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_save_and_load_take_flock_when_available(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeFcntl:
+        LOCK_SH = 1
+        LOCK_EX = 2
+        LOCK_UN = 4
+
+        @staticmethod
+        def flock(_fd, operation):
+            calls.append(operation)
+
+    monkeypatch.setattr(state_module, "fcntl", FakeFcntl)
+
+    state = StateStore(tmp_path)
+    assert FakeFcntl.LOCK_SH in calls
+
+    state.set_heartbeat("2026-10-26T12:00:00+00:00")
+
+    assert FakeFcntl.LOCK_EX in calls
+    assert FakeFcntl.LOCK_UN in calls
+    assert (tmp_path / ".state.lock").exists()

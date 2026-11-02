@@ -462,3 +462,150 @@ def agent_module_version():
     import server_agent
 
     return server_agent.__version__
+
+
+def test_process_spools_failed_delivery_and_retry_succeeds(tmp_path):
+    from server_agent.core.models import Incident
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.notifier = SimpleNamespace(send=lambda incident: False)
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["delivery_errors"] == 1
+    due = agent.spool.due()
+    assert len(due) == 1
+    assert due[0][1]["fingerprint"] == "fp:1"
+
+    delivered = []
+    agent.notifier = SimpleNamespace(
+        send=lambda stored: delivered.append(stored) or True
+    )
+    agent._retry_spooled()
+
+    assert [stored.fingerprint for stored in delivered] == ["fp:1"]
+    assert agent.spool.due() == []
+    assert agent._counter_snapshot()["sent"] == 1
+    assert isinstance(incident, Incident)
+
+
+def test_process_spools_rate_limited_alert(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent._alert_rate_limited = lambda: True
+
+    agent._process(incident)
+
+    entries = agent.spool.due()
+    assert len(entries) == 1
+    assert entries[0][1]["fingerprint"] == "fp:1"
+    assert agent._counter_snapshot()["dropped"] == 1
+
+
+def test_dispatch_spools_when_queue_is_full(tmp_path):
+    from server_agent.core.models import Incident
+    from server_agent.core.spool import IncidentSpool
+
+    agent = object.__new__(Agent)
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    agent._alert_queue = _FullQueue()
+    agent.spool = IncidentSpool(tmp_path)
+
+    agent.dispatch(
+        Incident(
+            kind="health",
+            severity="INFO",
+            title="title",
+            summary="summary",
+            fingerprint="fp:full",
+        )
+    )
+
+    entries = agent.spool.due()
+    assert len(entries) == 1
+    assert entries[0][1]["fingerprint"] == "fp:full"
+
+
+def test_process_counts_delivery_error_when_send_raises():
+    agent, incident = _process_agent()
+
+    def _boom(_incident):
+        raise RuntimeError("transport exploded")
+
+    agent.notifier = SimpleNamespace(send=_boom)
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["sent"] == 0
+    assert agent._counter_snapshot()["delivery_errors"] == 1
+
+
+def test_retry_spooled_does_not_run_ai(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.notifier = SimpleNamespace(send=lambda stored: False)
+    agent._process(incident)
+
+    analyzed = []
+    agent.ai = SimpleNamespace(
+        analyze=lambda stored: analyzed.append(stored) or "",
+        close=lambda: None,
+    )
+    agent.notifier = SimpleNamespace(send=lambda stored: True)
+
+    agent._retry_spooled()
+
+    assert analyzed == []
+    assert agent.spool.due() == []
+
+
+def test_retry_uses_mark_attempt_when_delivery_still_fails(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.notifier = SimpleNamespace(send=lambda stored: False)
+    agent._process(incident)
+
+    agent._retry_spooled()
+
+    key = IncidentSpool.key_for("fp:1")
+    stored = __import__("json").loads(
+        (agent.spool.directory / f"{key}.json").read_text()
+    )
+    assert stored["attempts"] == 1
+    assert agent.spool.due() == []
+
+
+def test_run_once_writes_status_when_drain_fails(tmp_path):
+    import pytest
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(server_name="srv1", state_dir=tmp_path)
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+    agent.health = SimpleNamespace(collect=lambda: [])
+    agent.web = SimpleNamespace(collect=lambda: [])
+    agent.ssh = SimpleNamespace(collect=lambda: [])
+    agent.kernel = SimpleNamespace(collect=lambda: [])
+
+    def _boom():
+        raise RuntimeError("drain failed")
+
+    agent.drain = _boom
+
+    with pytest.raises(RuntimeError):
+        agent.run_once()
+
+    assert (tmp_path / "status.json").exists()
+    agent._shutdown_worker(timeout=2)

@@ -1,10 +1,15 @@
+import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
+from server_agent import agent as agent_module
 from server_agent.agent import (
     _heartbeat_age_seconds,
     _heartbeat_is_stale,
     _parse_heartbeat,
 )
+from server_agent.core.config import Config
+from server_agent.core.state import StateStore
 
 
 def test_heartbeat_age_uses_timezone_aware_timestamp():
@@ -34,3 +39,52 @@ def test_future_heartbeat_age_is_clamped_to_zero():
 def test_stale_heartbeat_detected_after_threshold():
     now = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
     assert _heartbeat_is_stale("2026-10-26T11:50:00+00:00", 300, now)
+
+
+class _CapturingNotifier:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, incident):
+        self.sent.append(incident)
+        return True
+
+
+def _watchdog_config(tmp_path):
+    return replace(
+        Config(),
+        alert_channel="telegram",
+        telegram_bot_token="token",
+        telegram_chat_id="123",
+        state_dir=tmp_path,
+        log_file=tmp_path / "agent.log",
+        auto_detect_environment=False,
+    )
+
+
+def test_watchdog_uses_separate_cooldown_and_leaves_state_json_untouched(
+    tmp_path, monkeypatch
+):
+    cfg = _watchdog_config(tmp_path)
+    state = StateStore(tmp_path)
+    state.set_heartbeat("2020-01-01T00:00:00+00:00")
+    state_before = (tmp_path / "state.json").read_bytes()
+    notifier = _CapturingNotifier()
+    monkeypatch.setattr(
+        agent_module,
+        "_build_notifier",
+        lambda cfg, log, metadata=None: (notifier, None),
+    )
+
+    assert agent_module._check_heartbeat(cfg) == 0
+
+    assert len(notifier.sent) == 1
+    assert notifier.sent[0].fingerprint == "agent:heartbeat"
+    assert (tmp_path / "state.json").read_bytes() == state_before
+    watchdog = json.loads((tmp_path / "watchdog-alert.json").read_text())
+    assert "agent:heartbeat" in watchdog["alerts"]
+
+    assert agent_module._check_heartbeat(cfg) == 0
+
+    assert len(notifier.sent) == 1
+    assert (tmp_path / "state.json").read_bytes() == state_before
