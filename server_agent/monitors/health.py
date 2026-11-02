@@ -82,8 +82,16 @@ class HealthMonitor:
         incidents: List[Incident] = []
         targets = self._service_targets()
         by_unit: Dict[str, Tuple[str, bool, ResolvedService]] = {}
+        names = [name for name, _ in targets]
+        resolve_many = getattr(self.resolver, "resolve_many", None)
+        if callable(resolve_many):
+            resolved_items = resolve_many(names)
+        else:
+            resolved_items = {name: self.resolver.resolve(name) for name in names}
         for name, required in targets:
-            item = self.resolver.resolve(name)
+            item = resolved_items.get(name)
+            if item is None:
+                item = self.resolver.resolve(name)
             existing = by_unit.get(item.unit)
             if existing is not None and existing[1] and not required:
                 continue

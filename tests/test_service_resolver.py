@@ -142,3 +142,87 @@ def test_valid_suffixed_name_still_resolves(monkeypatch):
     assert resolved.installed is True
     assert resolved.unit == "nginx.service"
     assert resolved.state == "installed"
+
+
+def test_resolve_many_uses_one_systemctl_call(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return _show(
+            "LoadState=not-found\n\n"
+            "Id=ssh.service\nLoadState=loaded\n\n"
+            "Id=nginx.service\nLoadState=loaded\n"
+        )
+
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+    resolved = ServiceResolver().resolve_many(["sshd", "nginx"])
+    assert resolved["sshd"].unit == "ssh.service"
+    assert resolved["sshd"].installed is True
+    assert resolved["nginx"].unit == "nginx.service"
+    assert len(calls) == 1
+    command = calls[0][0]
+    assert command[:7] == [
+        "systemctl",
+        "show",
+        "-p",
+        "Id",
+        "-p",
+        "LoadState",
+        "--",
+    ]
+    assert "sshd" in command and "nginx" in command
+
+
+def test_resolve_many_falls_back_when_output_is_malformed(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return _show("Id=nginx.service\nLoadState=loaded\n")
+
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+    resolved = ServiceResolver().resolve_many(["nginx", "redis"])
+    assert resolved["nginx"].installed is True
+    assert resolved["redis"].installed is True
+    assert len(calls) == 4
+
+
+def test_resolve_many_marks_all_unknown_when_systemctl_fails(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+    resolved = ServiceResolver().resolve_many(["nginx", "redis"])
+    assert resolved["nginx"].state == "unknown"
+    assert resolved["redis"].state == "unknown"
+    assert len(calls) == 1
+
+
+def test_resolve_many_skips_invalid_names_without_probing(monkeypatch):
+    exists_calls, run_calls = _no_probe(monkeypatch)
+    resolved = ServiceResolver().resolve_many(["../../tmp/evil", "nginx/service"])
+    assert resolved["../../tmp/evil"].state == "not-found"
+    assert resolved["nginx/service"].state == "not-found"
+    assert exists_calls == []
+    assert run_calls == []
+
+
+def test_resolve_many_reuses_cached_installed_result(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return _show("Id=nginx.service\nLoadState=loaded\n")
+
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+    resolver = ServiceResolver()
+    assert resolver.resolve("nginx").installed is True
+    resolved = resolver.resolve_many(["nginx", "redis"])
+    assert resolved["nginx"].installed is True
+    assert resolved["redis"].installed is True
+    assert len(calls) == 4
+    assert "redis" in calls[1][0]

@@ -64,6 +64,114 @@ class ServiceResolver:
             return ResolvedService(name, candidates[0], False, "unknown")
         return ResolvedService(name, candidates[0], False, "not-found")
 
+    def resolve_many(self, names: List[str]) -> Dict[str, ResolvedService]:
+        """Resolve several service names while issuing at most one systemctl call."""
+        results: Dict[str, ResolvedService] = {}
+        pending: List[str] = []
+
+        for name in names:
+            if not isinstance(name, str):
+                continue
+            if name in results or name in pending:
+                continue
+            if not name.strip() or not _UNIT_RE.fullmatch(name):
+                results[name] = ResolvedService(
+                    name=name, unit=name, installed=False, state="not-found"
+                )
+                continue
+            cached = self._cache.get(name)
+            if cached is not None and cached.installed:
+                results[name] = cached
+                continue
+            pending.append(name)
+
+        remaining: List[str] = []
+        for name in pending:
+            for candidate in alias_candidates(name):
+                unit = self._find_unit_file(candidate)
+                if unit:
+                    result = ResolvedService(name, unit, True, "installed")
+                    self._cache[name] = result
+                    results[name] = result
+                    break
+            else:
+                remaining.append(name)
+
+        candidates: List[str] = []
+        for name in remaining:
+            for candidate in alias_candidates(name):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        queries = self._query_units(candidates) if candidates else {}
+
+        for name in remaining:
+            candidates_for_name = alias_candidates(name)
+            saw_unknown = False
+            resolved = None
+            for candidate in candidates_for_name:
+                state, unit = queries.get(candidate, ("not-found", ""))
+                if state == "unknown":
+                    saw_unknown = True
+                    continue
+                if state == "installed":
+                    resolved = ResolvedService(name, unit, True, "installed")
+                    break
+            if resolved is not None:
+                self._cache[name] = resolved
+                results[name] = resolved
+            elif saw_unknown:
+                results[name] = ResolvedService(
+                    name, candidates_for_name[0], False, "unknown"
+                )
+            else:
+                results[name] = ResolvedService(
+                    name, candidates_for_name[0], False, "not-found"
+                )
+
+        return results
+
+    def _query_units(self, candidates: List[str]) -> Dict[str, tuple]:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "show", "-p", "Id", "-p", "LoadState", "--", *candidates],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return {candidate: ("unknown", "") for candidate in candidates}
+
+        blocks = self._parse_show_blocks(proc.stdout or "")
+        if proc.returncode != 0 or len(blocks) != len(candidates):
+            return {candidate: self._query_unit(candidate) for candidate in candidates}
+
+        results: Dict[str, tuple] = {}
+        for candidate, data in zip(candidates, blocks):
+            load_state = data.get("LoadState", "")
+            if not load_state or load_state == "not-found":
+                results[candidate] = ("not-found", "")
+            else:
+                results[candidate] = ("installed", data.get("Id") or candidate)
+        return results
+
+    @staticmethod
+    def _parse_show_blocks(text: str) -> List[Dict[str, str]]:
+        blocks: List[Dict[str, str]] = []
+        current: Dict[str, str] = {}
+        for line in text.splitlines():
+            if not line.strip():
+                if current:
+                    blocks.append(current)
+                    current = {}
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                current[key.strip()] = value.strip()
+        if current:
+            blocks.append(current)
+        return blocks
+
     def _find_unit_file(self, candidate: str) -> str:
         unit = candidate if candidate.endswith(".service") else f"{candidate}.service"
         for directory in self.SYSTEMD_DIRS:

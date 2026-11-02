@@ -451,3 +451,27 @@ def test_unknown_required_is_warning(monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].severity == "WARNING"
     assert incidents[0].details["state"] == "unknown"
+
+
+class BatchFakeResolver:
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.calls = []
+
+    def resolve_many(self, names):
+        self.calls.append(list(names))
+        return {name: self.mapping[name] for name in names}
+
+
+def test_collect_services_resolves_targets_in_one_batch(monkeypatch):
+    monitor = make_monitor(services=["nginx", "redis"])
+    resolver = BatchFakeResolver(
+        {
+            "nginx": ResolvedService("nginx", "nginx.service", True, "installed"),
+            "redis": ResolvedService("redis", "redis.service", True, "installed"),
+        }
+    )
+    monitor.resolver = resolver
+    monkeypatch.setattr(monitor, "_service_state", lambda unit: ("active", ""))
+    assert monitor.collect_services() == []
+    assert resolver.calls == [["nginx", "redis"]]
