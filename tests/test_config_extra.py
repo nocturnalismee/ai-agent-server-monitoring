@@ -288,6 +288,18 @@ def test_ai_max_output_tokens_must_be_in_range(tokens):
         cfg.validate()
 
 
+@pytest.mark.parametrize("rate", [0, 30, 600])
+def test_alert_rate_limit_accepts_zero_and_valid_range(rate):
+    _valid_config(alert_rate_limit_per_minute=rate).validate()
+
+
+@pytest.mark.parametrize("rate", [-1, 601])
+def test_alert_rate_limit_must_be_in_range(rate):
+    cfg = _valid_config(alert_rate_limit_per_minute=rate)
+    with pytest.raises(ValueError, match="ALERT_RATE_LIMIT_PER_MINUTE"):
+        cfg.validate()
+
+
 @pytest.mark.parametrize("rate", [0, 121])
 def test_ai_rate_limit_must_be_in_range(rate):
     cfg = _ai_config(ai_rate_limit_per_minute=rate)

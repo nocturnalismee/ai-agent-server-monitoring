@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import server_agent.core.state as state_module
-from server_agent.core.state import StateStore
+from server_agent.core.state import StateStore, _recent_timestamp
 
 
 def _storage(monkeypatch, now=1000.0, monotonic=0.0):
@@ -59,6 +59,35 @@ def test_alert_cooldown_gating(tmp_path, monkeypatch):
     assert state.can_alert("disk", cooldown=10) is False
     clock["now"] = 1010.0
     assert state.can_alert("disk", cooldown=10) is True
+
+
+def test_can_alert_allows_alert_when_stored_timestamp_is_in_the_future(
+    tmp_path, monkeypatch
+):
+    _storage(monkeypatch, now=1000.0)
+    state = StateStore(tmp_path)
+    state.data["alerts"]["disk"] = 2000.0
+
+    assert state.can_alert("disk", cooldown=900) is True
+
+
+def test_clear_alert_removes_and_persists_only_when_present(tmp_path, monkeypatch):
+    state = StateStore(tmp_path)
+    state.mark_alert_sent("health:CPU", cooldown=60)
+
+    state.clear_alert("health:CPU")
+
+    assert "health:CPU" not in state.data["alerts"]
+    assert "health:CPU" not in StateStore(tmp_path).data["alerts"]
+
+    save = Mock()
+    monkeypatch.setattr(state, "save", save)
+    state.clear_alert("health:CPU")
+    save.assert_not_called()
+
+
+def test_recent_timestamp_treats_future_values_as_recent():
+    assert _recent_timestamp(2000.0, now=1000.0, retention=300) is True
 
 
 def test_mark_alert_sent_prunes_stale_and_invalid_entries(tmp_path, monkeypatch):

@@ -9,11 +9,15 @@ class FakeState:
     def __init__(self):
         self.active = {}
         self.service_failures = {}
+        self.cleared_alerts = []
 
     def set_health_active(self, key, active):
         previous = self.active.get(key, False)
         self.active[key] = active
         return previous
+
+    def clear_alert(self, fingerprint):
+        self.cleared_alerts.append(fingerprint)
 
     def service_failure_count(self, key):
         return self.service_failures.get(key, 0)
@@ -101,6 +105,47 @@ def test_metric_incident_recovery_disabled():
     monitor = make_monitor(recovery_alerts=False)
     assert monitor._metric_incident("CPU", 95.0, 80, 90) is not None
     assert monitor._metric_incident("CPU", 10.0, 80, 90) is None
+
+
+def test_metric_recovery_clears_problem_cooldown_and_rearms_alert(tmp_path):
+    from server_agent.core.state import StateStore
+
+    monitor = HealthMonitor(make_config(), StateStore(tmp_path), logger=None)
+    problem = monitor._metric_incident("CPU", 95.0, 80, 90)
+    assert problem is not None
+    monitor.state.mark_alert_sent(problem.fingerprint, cooldown=900)
+    assert monitor.state.can_alert(problem.fingerprint, 900) is False
+
+    recovery = monitor._metric_incident("CPU", 10.0, 80, 90)
+    assert recovery is not None
+    assert recovery.kind == "recovery"
+    assert monitor.state.can_alert("health:CPU", 900) is True
+
+    second_outage = monitor._metric_incident("CPU", 95.0, 80, 90)
+    assert second_outage is not None
+    assert monitor.state.can_alert(second_outage.fingerprint, 900) is True
+
+
+def test_service_recovery_clears_problem_cooldown(monkeypatch, tmp_path):
+    from server_agent.core.state import StateStore
+
+    monitor = HealthMonitor(make_config(), StateStore(tmp_path), logger=None)
+    monitor.resolver = FakeResolver(
+        {"nginx": ResolvedService("nginx", "nginx.service", True, "installed")}
+    )
+    monkeypatch.setattr(monitor, "_service_state", lambda service: ("failed", ""))
+
+    down = monitor.collect_services()
+    assert len(down) == 1
+    monitor.state.mark_alert_sent("service:nginx", cooldown=900)
+    assert monitor.state.can_alert("service:nginx", 900) is False
+
+    monkeypatch.setattr(monitor, "_service_state", lambda service: ("active", ""))
+    recovered = monitor.collect_services()
+
+    assert len(recovered) == 1
+    assert recovered[0].kind == "recovery"
+    assert monitor.state.can_alert("service:nginx", 900) is True
 
 
 def test_service_state_parses_systemctl(monkeypatch):

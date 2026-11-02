@@ -52,15 +52,19 @@ class HealthMonitor:
                          "warning_threshold": warning, "critical_threshold": critical},
             )
 
-        if was_active and self.cfg.recovery_alerts:
-            return Incident(
-                kind="recovery",
-                severity="INFO",
-                title=f"{name} recovered",
-                summary=f"{name} returned to normal: {value:.1f}{unit}",
-                fingerprint=f"recovery:{key}",
-                details={"metric": name, "value": value, "unit": unit},
-            )
+        if was_active:
+            # Let a genuine second outage alert immediately instead of waiting
+            # out the cooldown from the previous incident.
+            self.state.clear_alert(key)
+            if self.cfg.recovery_alerts:
+                return Incident(
+                    kind="recovery",
+                    severity="INFO",
+                    title=f"{name} recovered",
+                    summary=f"{name} returned to normal: {value:.1f}{unit}",
+                    fingerprint=f"recovery:{key}",
+                    details={"metric": name, "value": value, "unit": unit},
+                )
         return None
 
     def _service_state(self, service: str) -> Tuple[str, str]:
@@ -114,21 +118,24 @@ class HealthMonitor:
             if state == "active":
                 self.state.clear_service_failure(key)
                 was_problem = self.state.set_health_active(key, False)
-                if was_problem and self.cfg.recovery_alerts:
-                    incidents.append(
-                        Incident(
-                            kind="recovery",
-                            severity="INFO",
-                            title=f"Service {name} recovered",
-                            summary=f"Service {name} ({item.unit}) is active again.",
-                            fingerprint=f"recovery:{key}",
-                            details={
-                                "service": name,
-                                "unit": item.unit,
-                                "state": "active",
-                            },
+                if was_problem:
+                    # Clear the outage cooldown so the next failure alerts again.
+                    self.state.clear_alert(key)
+                    if self.cfg.recovery_alerts:
+                        incidents.append(
+                            Incident(
+                                kind="recovery",
+                                severity="INFO",
+                                title=f"Service {name} recovered",
+                                summary=f"Service {name} ({item.unit}) is active again.",
+                                fingerprint=f"recovery:{key}",
+                                details={
+                                    "service": name,
+                                    "unit": item.unit,
+                                    "state": "active",
+                                },
+                            )
                         )
-                    )
                 continue
 
             failures = self.state.increment_service_failure(key)

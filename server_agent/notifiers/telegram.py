@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -269,6 +270,20 @@ class TelegramNotifier(BaseNotifier):
             )
             return True
         except HTTPError as exc:
+            if exc.code == 429:
+                retry_after = 5.0
+                headers = getattr(exc, "headers", None)
+                if headers is not None:
+                    try:
+                        retry_after = float(headers.get("Retry-After", retry_after))
+                    except (TypeError, ValueError):
+                        retry_after = 5.0
+                delay = min(max(retry_after, 0.0), 10.0)
+                self.logger.warning(
+                    "Telegram API rate limited (HTTP 429); backing off %.1fs", delay
+                )
+                time.sleep(delay)
+                return False
             self.logger.error("Telegram API returned HTTP %s", exc.code)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             self.logger.error("Telegram alert delivery failed: %s", exc)

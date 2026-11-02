@@ -627,6 +627,7 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `LOAD_WARNING_PER_CPU` | `1.5` | 1-minute load average per CPU that triggers a warning. |
 | `LOAD_CRITICAL_PER_CPU` | `2.5` | 1-minute load average per CPU that triggers a critical alert. |
 | `ALERT_COOLDOWN_SECONDS` | `900` | Cooldown period before repeating an alert with the same fingerprint. |
+| `ALERT_RATE_LIMIT_PER_MINUTE` | `30` | Global alert send cap per 60-second sliding window (`0` disables). |
 | `RECOVERY_ALERTS` | `true` | Sends a recovery notice when a metric/service returns to normal. |
 | `SSH_FAILED_THRESHOLD` | `5` | Failed attempts before triggering an SSH burst alert. |
 | `SSH_FAILED_WINDOW_SECONDS` | `300` | Window in seconds for counting failed SSH logins. |

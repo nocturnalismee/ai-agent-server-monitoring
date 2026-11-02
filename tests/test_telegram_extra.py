@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
 
+import pytest
+
 from server_agent.core.models import Incident, ServerMetadata
 from server_agent.notifiers import telegram as telegram_module
 from server_agent.notifiers.telegram import (
@@ -39,7 +41,7 @@ def _notifier(thread_id=None, metadata=None):
         server_name="app.example.com",
         environment="production",
     )
-    logger = SimpleNamespace(info=Mock(), error=Mock())
+    logger = SimpleNamespace(info=Mock(), error=Mock(), warning=Mock())
     return TelegramNotifier(config, logger=logger, metadata=metadata), logger
 
 
@@ -204,6 +206,29 @@ def test_send_http_error_returns_false(monkeypatch):
 
     assert notifier.send(_incident()) is False
     logger.error.assert_called_once_with("Telegram API returned HTTP %s", 500)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_sleep"),
+    [(None, 5), ("3", 3), ("99", 10), ("invalid", 5)],
+)
+def test_send_429_honours_retry_after_and_returns_false(
+    monkeypatch, retry_after, expected_sleep
+):
+    notifier, logger = _notifier()
+    sleeps = []
+    headers = None if retry_after is None else {"Retry-After": retry_after}
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 429, "Too Many Requests", headers, None)
+
+    monkeypatch.setattr(telegram_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(telegram_module.time, "sleep", sleeps.append)
+
+    assert notifier.send(_incident()) is False
+    assert sleeps == [expected_sleep]
+    logger.warning.assert_called_once()
+    logger.error.assert_not_called()
 
 
 def test_send_url_error_returns_false(monkeypatch):

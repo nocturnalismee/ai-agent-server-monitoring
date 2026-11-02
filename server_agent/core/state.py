@@ -73,7 +73,16 @@ class StateStore:
                 last = float(self.data.setdefault("alerts", {}).get(fingerprint, 0))
             except (TypeError, ValueError):
                 last = 0.0
-            return now - last >= cooldown
+            # A timestamp in the future means the clock moved backwards. Treat
+            # the cooldown as expired so a real outage is never suppressed.
+            return last > now or now - last >= cooldown
+
+    def clear_alert(self, fingerprint: str) -> None:
+        with self.lock:
+            alerts = self.data.setdefault("alerts", {})
+            if fingerprint in alerts:
+                alerts.pop(fingerprint, None)
+                self.save()
 
     def mark_alert_sent(self, fingerprint: str, cooldown: int) -> None:
         with self.lock:
@@ -191,6 +200,8 @@ class StateStore:
 
 def _recent_timestamp(value: Any, now: float, retention: float) -> bool:
     try:
+        # A value in the future (clock moved backwards) is treated as recent:
+        # forgetting tracked failures is less safe than retaining them.
         return now - float(value) <= retention
     except (TypeError, ValueError):
         return False

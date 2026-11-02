@@ -106,6 +106,135 @@ def test_run_loops_once_then_shuts_down(monkeypatch):
     assert not agent._alert_worker.is_alive()
 
 
+def test_run_once_isolates_monitor_failures():
+    agent = _bare_agent()
+    collected = []
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+
+    def fail():
+        raise RuntimeError("collector exploded")
+
+    agent.health = SimpleNamespace(collect=fail)
+    agent.web = SimpleNamespace(collect=fail)
+    agent.ssh = SimpleNamespace(collect=lambda: ["ssh-1"])
+    agent.kernel = SimpleNamespace(collect=lambda: ["kernel-1"])
+    agent.dispatch = collected.append
+    agent.drain = lambda: collected.append("drained")
+
+    agent.run_once()
+
+    assert collected == ["ssh-1", "kernel-1", "drained"]
+
+    agent._shutdown_worker(timeout=2)
+
+
+def test_run_isolates_monitors_and_respects_intervals(monkeypatch):
+    import server_agent.agent as agent_module
+
+    agent = _bare_agent()
+    agent.running = True
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+    agent.cfg = SimpleNamespace(
+        server_name="srv1",
+        environment="production",
+        health_interval=10,
+        log_interval=5,
+    )
+    agent.metadata = None
+
+    calls = {"health": 0, "web": 0, "ssh": 0, "kernel": 0}
+    exceptions = []
+
+    def failing(name):
+        def collect():
+            calls[name] += 1
+            raise RuntimeError(name + " exploded")
+
+        return collect
+
+    def healthy(name):
+        def collect():
+            calls[name] += 1
+            return []
+
+        return collect
+
+    agent.health = SimpleNamespace(collect=failing("health"))
+    agent.web = SimpleNamespace(collect=failing("web"))
+    agent.ssh = SimpleNamespace(collect=healthy("ssh"))
+    agent.kernel = SimpleNamespace(collect=healthy("kernel"))
+    agent.dispatch = lambda incident: None
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: exceptions.append(a),
+    )
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        clock["now"] += seconds
+        if clock["now"] >= 1011:
+            agent.running = False
+
+    monkeypatch.setattr(agent_module.time, "sleep", sleep)
+
+    agent.run()
+
+    assert calls["health"] == 2
+    assert calls["web"] == 3
+    assert calls["ssh"] == 3
+    assert calls["kernel"] == 3
+    assert len(exceptions) == 5
+    assert not agent._alert_worker.is_alive()
+
+
+def test_alert_rate_limit_blocks_excess_and_does_not_mark_cooldown():
+    from server_agent.core.models import Incident
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(
+        alert_cooldown_seconds=900,
+        escalation_min_severity="CRITICAL",
+        alert_rate_limit_per_minute=2,
+    )
+    marked = []
+    agent.state = SimpleNamespace(
+        can_alert=lambda fingerprint, cooldown: True,
+        mark_alert_sent=lambda fingerprint, cooldown: marked.append(fingerprint),
+    )
+    agent.evidence_collector = None
+    agent.ai = SimpleNamespace(analyze=lambda incident: "", close=lambda: None)
+    sent = []
+    agent.notifier = SimpleNamespace(send=lambda incident: sent.append(incident) or True)
+    agent.escalation_notifier = None
+    warnings = []
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda message, *args: warnings.append(message % args),
+        exception=lambda *a, **k: None,
+    )
+
+    for index in range(3):
+        agent._process(
+            Incident(
+                kind="health",
+                severity="INFO",
+                title="title",
+                summary="summary",
+                fingerprint=f"fp:{index}",
+            )
+        )
+
+    assert [incident.fingerprint for incident in sent] == ["fp:0", "fp:1"]
+    assert marked == ["fp:0", "fp:1"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Alert rate limit reached")
+
+    agent._shutdown_worker(timeout=2)
+
+
 def test_ai_failure_does_not_suppress_alert():
     from server_agent.core.models import Incident
 

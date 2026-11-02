@@ -144,6 +144,7 @@ class Config:
     kernel_journal_fallback: bool = _bool("KERNEL_JOURNAL_FALLBACK", True)
 
     alert_cooldown_seconds: int = _int("ALERT_COOLDOWN_SECONDS", 900)
+    alert_rate_limit_per_minute: int = _int("ALERT_RATE_LIMIT_PER_MINUTE", 30)
     recovery_alerts: bool = _bool("RECOVERY_ALERTS", True)
     alert_channel: str = os.getenv("ALERT_CHANNEL", "email").strip().lower()
 
@@ -310,6 +311,8 @@ class Config:
             errors.append("Intervals are too aggressive; HEALTH_INTERVAL>=10 and LOG_INTERVAL>=2")
         if self.heartbeat_stale_seconds < 60:
             errors.append("HEARTBEAT_STALE_SECONDS must be at least 60")
+        if not 0 <= self.alert_rate_limit_per_minute <= 600:
+            errors.append("ALERT_RATE_LIMIT_PER_MINUTE must be between 0 and 600")
         if self.log_format not in {"text", "json"}:
             errors.append("LOG_FORMAT must be 'text' or 'json'")
         for name, warning, critical in (

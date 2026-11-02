@@ -104,8 +104,24 @@ def test_analyze_single_error_is_warning_and_has_stable_fingerprint():
 
     assert incident is not None
     assert incident.severity == "WARNING"
-    assert incident.fingerprint == "web:Nginx:upstream timeout"
+    assert incident.fingerprint == "web:Nginx"
     assert incident.summary.startswith("1 new Nginx error-log entries")
+
+
+def test_analyze_fingerprint_does_not_change_with_error_categories():
+    first = _analyze(["upstream timed out"])
+    second = _analyze(
+        [
+            "connect() failed (111: Connection refused)",
+            "permission denied while serving /index.php",
+        ]
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.fingerprint == "web:Nginx"
+    assert second.fingerprint == "web:Nginx"
+    assert second.details["categories"] != first.details["categories"]
 
 
 def test_analyze_unclassified_lines_are_grouped_as_other():

@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
@@ -31,6 +32,7 @@ from .notifiers.telegram import TelegramNotifier
 # How often the running agent refreshes its heartbeat timestamp.
 _HEARTBEAT_WRITE_SECONDS = 30.0
 _HEARTBEAT_FINGERPRINT = "agent:heartbeat"
+_ALERT_RATE_WINDOW_SECONDS = 60.0
 _SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
 
 
@@ -82,7 +84,7 @@ def _heartbeat_age_seconds(
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
-    return (current - parsed).total_seconds()
+    return max((current - parsed).total_seconds(), 0.0)
 
 
 def _heartbeat_is_stale(
@@ -198,6 +200,7 @@ class Agent:
         # are never stalled. A single worker keeps shared state free of races.
         self._alert_queue: "queue.Queue[object]" = queue.Queue(maxsize=1000)
         self._alert_stop = object()
+        self._alert_send_times: "deque[float]" = deque()
         self._alert_worker = threading.Thread(
             target=self._alert_worker_loop,
             name="alert-worker",
@@ -229,12 +232,42 @@ class Agent:
             finally:
                 self._alert_queue.task_done()
 
+    def _alert_rate_limited(self) -> bool:
+        limit = int(getattr(self.cfg, "alert_rate_limit_per_minute", 0) or 0)
+        if limit <= 0:
+            return False
+        times = getattr(self, "_alert_send_times", None)
+        if times is None:
+            times = deque()
+            self._alert_send_times = times
+        now = time.monotonic()
+        cutoff = now - _ALERT_RATE_WINDOW_SECONDS
+        while times and times[0] <= cutoff:
+            times.popleft()
+        return len(times) >= limit
+
+    def _record_alert_send(self) -> None:
+        limit = int(getattr(self.cfg, "alert_rate_limit_per_minute", 0) or 0)
+        if limit <= 0:
+            return
+        times = getattr(self, "_alert_send_times", None)
+        if times is None:
+            times = deque()
+            self._alert_send_times = times
+        times.append(time.monotonic())
+
     def _process(self, incident):
         # Security logins are intentionally unique per user/IP but still cooldown-protected.
         if not self.state.can_alert(
             incident.fingerprint, self.cfg.alert_cooldown_seconds
         ):
             self.log.info("Suppressed duplicate alert: %s", incident.fingerprint)
+            return
+
+        if self._alert_rate_limited():
+            self.log.warning(
+                "Alert rate limit reached; dropping alert: %s", incident.fingerprint
+            )
             return
 
         # Collect real-time diagnostic evidence logs before notifying or asking AI
@@ -255,6 +288,7 @@ class Agent:
                 self.log.exception("AI analysis failed; sending alert without it")
 
         # A failed delivery must not suppress the next alert.
+        self._record_alert_send()
         delivered = self.notifier.send(external_incident)
         if self.escalation_notifier is not None and _severity_at_least(
             incident.severity, self.cfg.escalation_min_severity
@@ -281,19 +315,22 @@ class Agent:
             self.log.warning("Alert worker did not stop within %.0fs", timeout)
         self.ai.close()
 
+    def _run_monitor(self, name, monitor):
+        try:
+            for incident in monitor.collect():
+                self.dispatch(incident)
+        except Exception:
+            self.log.exception("Monitor failed: %s", name)
+
     def run_once(self):
         try:
             self.state.set_heartbeat()
         except Exception:
             self.log.exception("Failed to update heartbeat")
-        for incident in self.health.collect():
-            self.dispatch(incident)
-        for incident in self.web.collect():
-            self.dispatch(incident)
-        for incident in self.ssh.collect():
-            self.dispatch(incident)
-        for incident in self.kernel.collect():
-            self.dispatch(incident)
+        self._run_monitor("health", self.health)
+        self._run_monitor("web", self.web)
+        self._run_monitor("ssh", self.ssh)
+        self._run_monitor("kernel", self.kernel)
         self.drain()
 
     def run(self):
@@ -320,22 +357,17 @@ class Agent:
                     last_heartbeat = now
                 except Exception:
                     self.log.exception("Failed to update heartbeat")
-            try:
-                if now - last_health >= self.cfg.health_interval:
-                    for incident in self.health.collect():
-                        self.dispatch(incident)
-                    last_health = now
+            if now - last_health >= self.cfg.health_interval:
+                # Advance first: a failing collector must wait for its next
+                # interval instead of retrying at the 1 Hz loop rate.
+                last_health = now
+                self._run_monitor("health", self.health)
 
-                if now - last_logs >= self.cfg.log_interval:
-                    for incident in self.web.collect():
-                        self.dispatch(incident)
-                    for incident in self.ssh.collect():
-                        self.dispatch(incident)
-                    for incident in self.kernel.collect():
-                        self.dispatch(incident)
-                    last_logs = now
-            except Exception:
-                self.log.exception("Unhandled monitor-cycle error")
+            if now - last_logs >= self.cfg.log_interval:
+                last_logs = now
+                self._run_monitor("web", self.web)
+                self._run_monitor("ssh", self.ssh)
+                self._run_monitor("kernel", self.kernel)
 
             time.sleep(1)
 

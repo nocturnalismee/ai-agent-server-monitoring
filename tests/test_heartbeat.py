@@ -26,6 +26,11 @@ def test_fresh_heartbeat_is_not_stale_and_future_is_tolerated():
     assert not _heartbeat_is_stale("2026-10-26T12:05:00+00:00", 300, now)
 
 
+def test_future_heartbeat_age_is_clamped_to_zero():
+    now = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
+    assert _heartbeat_age_seconds("2026-10-26T12:05:00+00:00", now) == 0
+
+
 def test_stale_heartbeat_detected_after_threshold():
     now = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
     assert _heartbeat_is_stale("2026-10-26T11:50:00+00:00", 300, now)

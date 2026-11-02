@@ -62,7 +62,7 @@ class WebLogMonitor:
             severity=severity,
             title=f"{server} errors detected",
             summary=f"{len(matched)} new {server} error-log entries; {category_text}",
-            fingerprint=f"web:{server}:{':'.join(sorted(categories.keys()))}",
+            fingerprint=f"web:{server}",
             details={
                 "server": server,
                 "log_path": path,
