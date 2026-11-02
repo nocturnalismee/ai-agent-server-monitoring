@@ -667,6 +667,7 @@ class Agent:
 
             time.sleep(1)
 
+        self._write_status()
         self._shutdown_worker()
         self.log.info("Server AI Agent stopped")
 

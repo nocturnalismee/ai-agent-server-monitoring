@@ -678,3 +678,53 @@ def test_run_once_writes_status_when_drain_fails(tmp_path):
 
     assert (tmp_path / "status.json").exists()
     agent._shutdown_worker(timeout=2)
+
+
+def test_alert_rate_limit_window_expires(monkeypatch):
+    import server_agent.agent as agent_module
+    from server_agent.core.models import Incident
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(
+        alert_cooldown_seconds=900,
+        escalation_min_severity="CRITICAL",
+        alert_rate_limit_per_minute=2,
+    )
+    agent.state = SimpleNamespace(
+        can_alert=lambda fingerprint, cooldown: True,
+        mark_alert_sent=lambda fingerprint, cooldown: None,
+    )
+    agent.evidence_collector = None
+    agent.ai = SimpleNamespace(analyze=lambda incident: "", close=lambda: None)
+    sent = []
+    agent.notifier = SimpleNamespace(send=lambda incident: sent.append(incident) or True)
+    agent.escalation_notifier = None
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: clock["now"])
+
+    def incident(index):
+        return Incident(
+            kind="health",
+            severity="INFO",
+            title="title",
+            summary="summary",
+            fingerprint=f"fp:{index}",
+        )
+
+    agent._process(incident(0))
+    agent._process(incident(1))
+    agent._process(incident(2))
+    assert len(sent) == 2
+
+    clock["now"] += 61
+    agent._process(incident(3))
+    assert len(sent) == 3
+    assert len(agent._alert_send_times) == 1
+
+    agent._shutdown_worker(timeout=2)

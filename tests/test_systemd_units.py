@@ -8,7 +8,7 @@ UNITS = ("server-ai-agent.service", "server-ai-agent-watchdog.service")
 
 
 def _parse(name):
-    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
     parser.read(UNIT_DIR / name)
     return parser
 
