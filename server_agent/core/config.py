@@ -185,6 +185,8 @@ class Config:
     ai_base_url: str = _env_str("AI_BASE_URL")
     ai_timeout_seconds: int = _int("AI_TIMEOUT_SECONDS", _int("GEMINI_TIMEOUT_SECONDS", 10))
     ai_max_output_tokens: int = _int("AI_MAX_OUTPUT_TOKENS", _int("GEMINI_MAX_OUTPUT_TOKENS", 400))
+    ai_send_samples: bool = _bool("AI_SEND_SAMPLES", True)
+    ai_send_evidence: bool = _bool("AI_SEND_EVIDENCE", True)
     ai_rate_limit_per_minute: int = _int("AI_RATE_LIMIT_PER_MINUTE", _int("GEMINI_RATE_LIMIT_PER_MINUTE", 10))
 
     state_dir: Path = Path(os.getenv("STATE_DIR", "/var/lib/server-ai-agent"))

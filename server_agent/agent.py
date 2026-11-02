@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -38,6 +39,21 @@ from .notifiers.telegram import TelegramNotifier
 # How often the running agent refreshes its heartbeat timestamp.
 _HEARTBEAT_WRITE_SECONDS = 30.0
 _HEARTBEAT_FINGERPRINT = "agent:heartbeat"
+
+
+def _sd_notify(message: str) -> None:
+    """Best-effort systemd readiness/watchdog notification."""
+    path = os.environ.get("NOTIFY_SOCKET")
+    if not path or not hasattr(socket, "AF_UNIX"):
+        return
+    if path.startswith("@"):
+        path = "\0" + path[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(path)
+            sock.sendall(message.encode("utf-8"))
+    except OSError:
+        pass
 _ALERT_RATE_WINDOW_SECONDS = 60.0
 _SPOOL_RETRY_SECONDS = 30.0
 _SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
@@ -611,6 +627,7 @@ class Agent:
             self.cfg.environment,
             badge,
         )
+        _sd_notify("READY=1")
         last_health = 0.0
         last_logs = 0.0
         try:
@@ -621,6 +638,7 @@ class Agent:
 
         while self.running:
             now = time.monotonic()
+            _sd_notify("WATCHDOG=1")
             if now - last_heartbeat >= _HEARTBEAT_WRITE_SECONDS:
                 try:
                     self.state.set_heartbeat()

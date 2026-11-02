@@ -122,7 +122,12 @@ class AIAnalyzer:
         return self._extract_openai_text(response)
 
     def _build_request(self, payload: Dict[str, Any]) -> Request:
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        # Mark the whole telemetry blob as untrusted data, never instructions.
+        payload_json = (
+            "UNTRUSTED-LOG-BEGIN\n"
+            + json.dumps(payload, ensure_ascii=False)
+            + "\nUNTRUSTED-LOG-END"
+        )
         sys_instruction = self.system_instruction
 
         if self.provider == "gemini":
@@ -204,10 +209,15 @@ class AIAnalyzer:
 
         # Defense in depth: sanitize outbound telemetry
         safe_incident = sanitize_incident(incident)
+        incident_dict = safe_incident.as_dict()
+        if not getattr(self.cfg, "ai_send_samples", True):
+            details = incident_dict.get("details")
+            if isinstance(details, dict):
+                details.pop("samples", None)
         payload = {
             "server": self.cfg.server_name,
             "environment": self.cfg.environment,
-            "incident": safe_incident.as_dict(),
+            "incident": incident_dict,
         }
         if self.metadata:
             payload["server_context"] = {
@@ -217,7 +227,9 @@ class AIAnalyzer:
                 "database": self.metadata.database,
                 "firewall": self.metadata.firewall,
             }
-        if getattr(safe_incident, "evidence", ""):
+        if getattr(safe_incident, "evidence", "") and getattr(
+            self.cfg, "ai_send_evidence", True
+        ):
             payload["incident_evidence_logs"] = safe_incident.evidence
 
         try:

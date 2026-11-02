@@ -664,6 +664,8 @@ re-exports explicit and silence them with `# noqa: F401` so lint stays green.
 | `AI_ENABLED` | `false` | Enables multi-provider AI triage enrichment. |
 | `AI_PROVIDER` | `deepseek` | Selected AI provider (`deepseek`, `openai`, `claude`, `gemini`, etc.). |
 | `AI_RATE_LIMIT_PER_MINUTE` | `10` | Max AI enrichment requests per minute (sliding window). |
+| `AI_SEND_SAMPLES` | `true` | Send log samples to the AI provider (`false` withholds them). |
+| `AI_SEND_EVIDENCE` | `true` | Send collected evidence logs to the AI provider (`false` withholds them). |
 | `SERVER_NAME` | auto-detected | Stable display name used in alerts and fingerprints. |
 | `ENVIRONMENT` | `production` | Environment label shown in alert headers/footers. |
 | `ALERT_CHANNEL` | `email` | Primary delivery channel: `email` or `telegram`. |

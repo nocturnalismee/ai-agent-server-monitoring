@@ -71,6 +71,16 @@ def _make_analyzer(config=None, metadata=None):
     return analyzer, logger
 
 
+def _payload_from(content):
+    prefix = "UNTRUSTED-LOG-BEGIN\n"
+    suffix = "\nUNTRUSTED-LOG-END"
+    if content.startswith(prefix):
+        content = content[len(prefix) :]
+    if content.endswith(suffix):
+        content = content[: -len(suffix)]
+    return json.loads(content)
+
+
 def _http_error(body, code=429):
     return HTTPError("https://api.example.test", code, "Too Many Requests", {}, io.BytesIO(body))
 
@@ -178,7 +188,7 @@ def test_build_request_gemini_body_and_headers():
     body = json.loads(req.data.decode("utf-8"))
     assert body["systemInstruction"]["parts"][0]["text"] == analyzer.system_instruction
     assert body["contents"][0]["role"] == "user"
-    assert json.loads(body["contents"][0]["parts"][0]["text"]) == {"metric": "cpu"}
+    assert _payload_from(body["contents"][0]["parts"][0]["text"]) == {"metric": "cpu"}
     assert body["generationConfig"] == {"maxOutputTokens": 256, "temperature": 0.2}
 
 
@@ -202,7 +212,7 @@ def test_build_request_anthropic_body_and_headers():
     assert body["system"] == analyzer.system_instruction
     assert body["max_tokens"] == 256
     assert body["temperature"] == 0.2
-    assert json.loads(body["messages"][0]["content"]) == {"metric": "cpu"}
+    assert _payload_from(body["messages"][0]["content"]) == {"metric": "cpu"}
 
 
 @pytest.mark.parametrize(
@@ -227,7 +237,7 @@ def test_build_request_openai_compatible_body_and_headers(provider, base_url, mo
     assert body["max_tokens"] == 256
     assert [message["role"] for message in body["messages"]] == ["system", "user"]
     assert body["messages"][0]["content"] == analyzer.system_instruction
-    assert json.loads(body["messages"][1]["content"]) == {"metric": "cpu"}
+    assert _payload_from(body["messages"][1]["content"]) == {"metric": "cpu"}
 
 
 def test_build_request_custom_base_url_strips_trailing_slash():
@@ -310,7 +320,7 @@ def test_analyze_payload_includes_context_and_sanitizes_secrets():
 
     assert captured["timeout"] == 7
     body = json.loads(captured["request"].data.decode("utf-8"))
-    payload = json.loads(body["messages"][1]["content"])
+    payload = _payload_from(body["messages"][1]["content"])
     assert payload["server"] == "srv-1"
     assert payload["environment"] == "production"
     assert payload["incident"]["fingerprint"] == "cpu:test"
@@ -341,7 +351,7 @@ def test_analyze_payload_omits_optional_context_when_unset():
         assert analyzer.analyze(_incident()) == "ok"
 
     body = json.loads(captured["request"].data.decode("utf-8"))
-    payload = json.loads(body["messages"][1]["content"])
+    payload = _payload_from(body["messages"][1]["content"])
     assert "server_context" not in payload
     assert "incident_evidence_logs" not in payload
 
@@ -510,3 +520,46 @@ def test_analyze_http_error_body_is_sanitized_and_bounded():
     assert secret not in logged
     assert "[REDACTED]" in logged
     assert len(logged) <= 200
+
+
+def test_analyze_wraps_telemetry_in_untrusted_delimiters():
+    analyzer, _ = _make_analyzer()
+    captured = {}
+
+    def fake_urlopen(request, timeout, context):
+        captured["request"] = request
+        return _FakeResponse(
+            json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+        )
+
+    with patch("server_agent.ai.analyzer.urlopen", side_effect=fake_urlopen):
+        assert analyzer.analyze(_incident()) == "ok"
+
+    body = json.loads(captured["request"].data.decode("utf-8"))
+    content = body["messages"][1]["content"]
+    assert content.startswith("UNTRUSTED-LOG-BEGIN\n")
+    assert content.endswith("\nUNTRUSTED-LOG-END")
+    assert _payload_from(content)["incident"]["fingerprint"] == "cpu:test"
+
+
+def test_analyze_respects_ai_data_opt_outs():
+    analyzer, _ = _make_analyzer(_config(ai_send_samples=False, ai_send_evidence=False))
+    incident = _incident(
+        details={"samples": ["token=abc"]},
+        evidence="password=supersecret",
+    )
+    captured = {}
+
+    def fake_urlopen(request, timeout, context):
+        captured["request"] = request
+        return _FakeResponse(
+            json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+        )
+
+    with patch("server_agent.ai.analyzer.urlopen", side_effect=fake_urlopen):
+        assert analyzer.analyze(incident) == "ok"
+
+    body = json.loads(captured["request"].data.decode("utf-8"))
+    payload = _payload_from(body["messages"][1]["content"])
+    assert "samples" not in payload["incident"]["details"]
+    assert "incident_evidence_logs" not in payload

@@ -44,6 +44,20 @@ def _format_card(items: List[Tuple[str, str]]) -> str:
     return "<pre>" + html.escape("\n".join(lines)) + "</pre>"
 
 
+_DESTRUCTIVE_COMMAND_RE = re.compile(
+    r"(?i)(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|dd\s+if=|mkfs(\.|\s)|"
+    r"curl[^|]*\|\s*(?:ba)?sh|wget[^|]*\|\s*(?:ba)?sh|iptables\s+-F|nft\s+flush|"
+    r"shutdown|reboot|halt|chmod\s+-R\s+777\s+/|&gt;\s*/etc/)"
+)
+
+
+def _render_code(match: "re.Match[str]") -> str:
+    command = match.group(1)
+    if _DESTRUCTIVE_COMMAND_RE.search(command):
+        return "<code>[blocked destructive command]</code>"
+    return f"<code>{command}</code>"
+
+
 def _format_ai_text(raw_text: str) -> str:
     """Format AI output cleanly with bold section headers and copyable code blocks."""
     if not raw_text:
@@ -51,8 +65,8 @@ def _format_ai_text(raw_text: str) -> str:
 
     escaped = html.escape(raw_text.strip())
 
-    # Format inline backticks `cmd` -> <code>cmd</code>
-    formatted = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    # Format inline backticks `cmd` -> <code>cmd</code>, blocking destructive commands.
+    formatted = re.sub(r"`([^`\n]+)`", _render_code, escaped)
 
     # Format bold markdown **Header:** -> <b>Header:</b>
     formatted = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", formatted)
