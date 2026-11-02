@@ -38,3 +38,31 @@ def test_invalid_log_format_is_rejected():
     cfg = _valid_config(log_format="xml")
     with pytest.raises(ValueError, match="LOG_FORMAT"):
         cfg.validate()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.com/v1",
+        "ftp://api.example.com/v1",
+        "//api.example.com/v1",
+        "api.example.com/v1",
+    ],
+)
+def test_non_https_ai_base_url_is_rejected(url):
+    cfg = _valid_config(ai_base_url=url)
+    with pytest.raises(ValueError, match="AI_BASE_URL must use https://"):
+        cfg.validate()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.example.com/v1",
+        "http://localhost:8080/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://[::1]:8080/v1",
+    ],
+)
+def test_https_or_loopback_ai_base_url_is_allowed(url):
+    _valid_config(ai_base_url=url).validate()

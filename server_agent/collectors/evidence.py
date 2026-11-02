@@ -7,6 +7,15 @@ from typing import Optional
 from ..core.models import Incident
 
 _UNIT_RE = re.compile(r"^[a-zA-Z0-9_@.:-]+$")
+_MAX_LINE_CHARS = 2000
+_MAX_EVIDENCE_CHARS = 16384
+_TRUNCATION_MARKER = " [truncated]"
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
 
 
 class EvidenceCollector:
@@ -16,6 +25,13 @@ class EvidenceCollector:
         self.max_lines = max_lines
         self.timeout = timeout
         self.logger = logger
+
+    @classmethod
+    def _finalize(cls, text: str) -> str:
+        capped_lines = "\n".join(
+            _truncate(line, _MAX_LINE_CHARS) for line in text.split("\n")
+        )
+        return _truncate(capped_lines, _MAX_EVIDENCE_CHARS)
 
     def collect(self, incident: Incident) -> str:
         """Return captured system evidence text, or empty string if not applicable/failed."""
@@ -62,8 +78,10 @@ class EvidenceCollector:
             )
             if proc.stdout.strip():
                 parts.append(
-                    f"--- journalctl -u {target} (last {self.max_lines} lines) ---\n"
-                    f"{proc.stdout.strip()}"
+                    self._finalize(
+                        f"--- journalctl -u {target} (last {self.max_lines} lines) ---\n"
+                        f"{proc.stdout.strip()}"
+                    )
                 )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
@@ -83,10 +101,14 @@ class EvidenceCollector:
             output = "\n".join(streams)
             if output:
                 lines = output.splitlines()[: self.max_lines]
-                parts.append("--- systemctl status " + target + " ---\n" + "\n".join(lines))
+                parts.append(
+                    self._finalize(
+                        "--- systemctl status " + target + " ---\n" + "\n".join(lines)
+                    )
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
-        return "\n\n".join(parts)
+        return self._finalize("\n\n".join(parts))
 
     def _collect_top_cpu_processes(self) -> str:
         try:
@@ -99,7 +121,9 @@ class EvidenceCollector:
             )
             lines = (p.stdout or "").strip().splitlines()[:6]
             if lines:
-                return "--- Top 5 CPU Processes ---\n" + "\n".join(lines)
+                return self._finalize(
+                    "--- Top 5 CPU Processes ---\n" + "\n".join(lines)
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
         return ""
@@ -115,7 +139,9 @@ class EvidenceCollector:
             )
             lines = (p.stdout or "").strip().splitlines()[:6]
             if lines:
-                return "--- Top 5 Memory Processes ---\n" + "\n".join(lines)
+                return self._finalize(
+                    "--- Top 5 Memory Processes ---\n" + "\n".join(lines)
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
         return ""
@@ -134,7 +160,7 @@ class EvidenceCollector:
             )
             out = (p.stdout or "").strip()
             if out:
-                return f"--- df -h {target} ---\n{out}"
+                return self._finalize(f"--- df -h {target} ---\n{out}")
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
         return ""

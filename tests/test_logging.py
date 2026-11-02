@@ -67,3 +67,32 @@ def test_text_logging_is_not_json(tmp_path):
             raise AssertionError("text format should not be valid JSON")
     finally:
         _close(logger)
+
+
+def test_log_file_is_chmod_600(tmp_path, monkeypatch):
+    import os
+
+    calls = []
+    monkeypatch.setattr(os, "chmod", lambda path, mode: calls.append((path, mode)))
+
+    log_file = tmp_path / "agent.log"
+    logger = setup_logging(log_file, "INFO", "text")
+    try:
+        assert (log_file, 0o600) in calls
+    finally:
+        _close(logger)
+
+
+def test_logging_survives_chmod_failure(tmp_path, monkeypatch):
+    import os
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("chmod not permitted")
+
+    monkeypatch.setattr(os, "chmod", _fail)
+
+    logger = setup_logging(tmp_path / "agent.log", "INFO", "text")
+    try:
+        assert logger is not None
+    finally:
+        _close(logger)

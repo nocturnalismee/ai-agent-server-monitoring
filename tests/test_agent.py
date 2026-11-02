@@ -142,3 +142,41 @@ def test_ai_failure_does_not_suppress_alert():
     assert marked == ["health:CPU"]
     agent._shutdown_worker(timeout=2)
     assert not agent._alert_worker.is_alive()
+
+
+def test_ai_result_is_sanitized_before_assignment(monkeypatch):
+    import server_agent.agent as agent_module
+    from server_agent.core.models import Incident
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(
+        alert_cooldown_seconds=900,
+        escalation_min_severity="CRITICAL",
+    )
+    agent.state = SimpleNamespace(
+        can_alert=lambda fingerprint, cooldown: True,
+        mark_alert_sent=lambda fingerprint, cooldown: None,
+    )
+    agent.evidence_collector = None
+    agent.ai = SimpleNamespace(
+        analyze=lambda _incident: "leaked token=supersecret", close=lambda: None
+    )
+    sent = []
+    agent.notifier = SimpleNamespace(send=lambda incident: sent.append(incident) or True)
+    agent.escalation_notifier = None
+    monkeypatch.setattr(agent_module, "sanitize_incident", lambda incident: incident)
+
+    incident = Incident(
+        kind="health",
+        severity="WARNING",
+        title="CPU high",
+        summary="CPU is 99%",
+        fingerprint="health:CPU",
+    )
+    agent._process(incident)
+
+    assert len(sent) == 1
+    assert "supersecret" not in sent[0].ai_analysis
+    assert "[REDACTED]" in sent[0].ai_analysis
+    agent._shutdown_worker(timeout=2)
+    assert not agent._alert_worker.is_alive()

@@ -33,3 +33,27 @@ def test_heartbeat_roundtrip_and_persistence(tmp_path):
 
     reloaded = StateStore(tmp_path)
     assert reloaded.heartbeat() == "2026-10-26T12:00:00+00:00"
+
+
+def test_state_dir_is_chmod_700(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    calls = []
+    monkeypatch.setattr(
+        Path, "chmod", lambda self, mode: calls.append((self, mode))
+    )
+
+    StateStore(tmp_path)
+
+    assert (tmp_path, 0o700) in calls
+
+
+def test_state_creation_survives_chmod_failure(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    def _fail(self, mode):
+        raise OSError("chmod not permitted")
+
+    monkeypatch.setattr(Path, "chmod", _fail)
+
+    StateStore(tmp_path)

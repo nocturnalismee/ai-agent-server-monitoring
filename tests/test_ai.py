@@ -103,7 +103,7 @@ def test_build_request_for_gemini():
     req = analyzer._build_request({"metric": "cpu"})
 
     assert "gemini-1.5-flash:generateContent" in req.full_url
-    assert "key=gemini-key-test" in req.full_url
+    assert "key=" not in req.full_url
     assert req.headers["X-goog-api-key"] == "gemini-key-test"
 
 

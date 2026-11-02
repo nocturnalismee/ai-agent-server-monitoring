@@ -169,8 +169,9 @@ def test_build_request_gemini_body_and_headers():
 
     assert req.full_url == (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-flash:generateContent?key=gemini-key"
+        "gemini-1.5-flash:generateContent"
     )
+    assert "key=" not in req.full_url
     assert req.get_method() == "POST"
     assert req.headers["X-goog-api-key"] == "gemini-key"
     assert req.headers["Content-type"] == "application/json; charset=utf-8"
@@ -493,3 +494,19 @@ def test_analyze_returns_empty_on_invalid_utf8_response():
         return_value=_FakeResponse(b"\xff\xfe\x00"),
     ):
         assert analyzer.analyze(_incident()) == ""
+
+
+def test_analyze_http_error_body_is_sanitized_and_bounded():
+    analyzer, logger = _make_analyzer()
+    secret = "SUPERSECRETVALUE"
+    body = json.dumps(
+        {"error": {"message": "token=" + secret + " " + "x" * 500}}
+    ).encode("utf-8")
+
+    with patch("server_agent.ai.analyzer.urlopen", side_effect=_http_error(body)):
+        assert analyzer.analyze(_incident()) == ""
+
+    logged = logger.warning.call_args.args[3]
+    assert secret not in logged
+    assert "[REDACTED]" in logged
+    assert len(logged) <= 200

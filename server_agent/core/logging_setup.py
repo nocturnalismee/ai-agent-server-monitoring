@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from logging.handlers import WatchedFileHandler
 from pathlib import Path
@@ -44,5 +45,10 @@ def setup_logging(
     file_handler = WatchedFileHandler(log_file)
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)
+
+    try:
+        os.chmod(log_file, 0o600)
+    except OSError:
+        pass
 
     return logger

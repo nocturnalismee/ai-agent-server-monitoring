@@ -18,28 +18,32 @@ _URL_SECRET = re.compile(
     re.IGNORECASE,
 )
 _HEADER_SECRET = re.compile(
-    r"(?im)^(\s*(?:authorization|cookie|set-cookie|x-api-key|x-auth-token)\s*:\s*)[^\r\n]+"
+    r"(?im)(\b(?:proxy-)?authorization|\b(?:set-)?cookie|\bx-api-key|\bx-auth-token)"
+    r"\s*:\s*[^\r\n]+"
 )
 _ASSIGNMENT_SECRET = re.compile(
-    r"((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
-    r"password|passwd|pwd|secret|cookie|private[_-]?key|database[_-]?url|dsn)"
-    r"\s*[:=]\s*)"
+    r"((?<![A-Za-z0-9])(?:\"|')?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"aws_secret_access_key|aws_access_key_id|client_secret|secret_key|db_pass|"
+    r"passphrase|credential|session|password|passwd|private[_-]?key|database[_-]?url|"
+    r"pass|secret|token|cookie|pwd|dsn)"
+    r"(?:\"|')?\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;=&]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
 _CONNECTION_PASSWORD = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb|redis)://[^:\s/]+:)[^@\s]+(@)",
-    re.IGNORECASE,
+    r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@]+:)[^@\s/]+(@)",
 )
 _PRIVATE_KEY = re.compile(
-    r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)",
     re.DOTALL,
 )
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
 _API_TOKEN = re.compile(
     r"\b(?:ghp|gho|ghu|ghs|ghr|glpat)[A-Za-z0-9_=-]+"
     r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}"
+    r"|\bsk_live_[A-Za-z0-9]{16,}"
+    r"|\bAIza[0-9A-Za-z_-]{35}\b"
     r"|\bAKIA[0-9A-Z]{16}\b"
     r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
 )
@@ -51,7 +55,7 @@ def sanitize_text(value: str) -> Tuple[str, bool]:
     result = _PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", result)
     result = _JWT.sub("[REDACTED JWT]", result)
     result = _API_TOKEN.sub("[REDACTED TOKEN]", result)
-    result = _HEADER_SECRET.sub(r"\1" + REDACTED, result)
+    result = _HEADER_SECRET.sub(r"\1: " + REDACTED, result)
     result = _URL_SECRET.sub(r"\1" + REDACTED, result)
     result = _ASSIGNMENT_SECRET.sub(r"\1" + REDACTED, result)
     result = _BEARER.sub(r"\1" + REDACTED, result)
@@ -95,6 +99,7 @@ def sanitize_incident(incident: Incident) -> Incident:
     """Return a safe copy for third-party AI and notification transports."""
     title, _ = sanitize_text(incident.title)
     summary, _ = sanitize_text(incident.summary)
+    fingerprint, _ = sanitize_text(incident.fingerprint)
     details, _ = sanitize_value(incident.details)
     analysis, _ = sanitize_text(incident.ai_analysis)
     evidence, _ = sanitize_text(getattr(incident, "evidence", ""))
@@ -102,6 +107,7 @@ def sanitize_incident(incident: Incident) -> Incident:
         incident,
         title=title,
         summary=summary,
+        fingerprint=fingerprint,
         details=details,
         ai_analysis=analysis,
         evidence=evidence,

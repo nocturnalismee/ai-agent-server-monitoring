@@ -16,7 +16,7 @@ from .collectors.filetail import FileTailer
 from .core.config import Config
 from .core.logging_setup import setup_logging
 from .core.models import Incident
-from .core.redaction import sanitize_incident
+from .core.redaction import sanitize_incident, sanitize_text
 from .core.state import StateStore
 from .detectors.environment import EnvironmentDetector
 from .detectors.service_profiles import profile_name, resolve_targets
@@ -247,7 +247,9 @@ class Agent:
         # AI is enrichment only; alerting must never depend on it.
         if incident.severity in {"WARNING", "CRITICAL"}:
             try:
-                external_incident.ai_analysis = self.ai.analyze(external_incident)
+                external_incident.ai_analysis = sanitize_text(
+                    self.ai.analyze(external_incident)
+                )[0]
                 external_incident = sanitize_incident(external_incident)
             except Exception:
                 self.log.exception("AI analysis failed; sending alert without it")

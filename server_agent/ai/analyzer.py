@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ..core.models import Incident, ServerMetadata
-from ..core.redaction import sanitize_incident
+from ..core.redaction import sanitize_incident, sanitize_text
 from .prompts import build_system_instruction
 
 
@@ -126,7 +126,7 @@ class AIAnalyzer:
         sys_instruction = self.system_instruction
 
         if self.provider == "gemini":
-            url = f"{self.base_url.rstrip('/')}/{self.model}:generateContent?key={self.api_key}"
+            url = f"{self.base_url.rstrip('/')}/{self.model}:generateContent"
             body = {
                 "systemInstruction": {"parts": [{"text": sys_instruction}]},
                 "contents": [{"role": "user", "parts": [{"text": payload_json}]}],
@@ -245,6 +245,7 @@ class AIAnalyzer:
             except Exception:
                 err_msg = ""
             if err_msg:
+                err_msg = sanitize_text(err_msg)[0][:200]
                 self.logger.warning(
                     "%s API returned HTTP %s: %s", self.provider.title(), exc.code, err_msg
                 )

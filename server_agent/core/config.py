@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -380,5 +381,12 @@ class Config:
                 errors.append("AI_RATE_LIMIT_PER_MINUTE must be between 1 and 120")
             if (self.ai_provider in {"custom", "openai_compatible"} or self.ai_provider not in allowed_providers) and not self.ai_base_url:
                 errors.append("AI_BASE_URL is required when AI_PROVIDER=custom or using a custom endpoint")
+        if self.ai_base_url:
+            parsed = urlparse(self.ai_base_url)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme != "https" and host not in {"localhost", "127.0.0.1", "::1"}:
+                errors.append(
+                    "AI_BASE_URL must use https:// (except localhost, 127.0.0.1, or [::1])"
+                )
         if errors:
             raise ValueError("; ".join(errors))

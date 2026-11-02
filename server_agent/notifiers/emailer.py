@@ -9,6 +9,15 @@ from typing import Optional
 from ..core.models import Incident, ServerMetadata
 from .base import BaseNotifier
 
+_MAX_BODY_CHARS = 64000
+_TRUNCATION_MARKER = " [truncated]"
+
+
+def _truncate_body(text: str) -> str:
+    if len(text) <= _MAX_BODY_CHARS:
+        return text
+    return text[: _MAX_BODY_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+
 
 class EmailNotifier(BaseNotifier):
     def __init__(self, config, logger, metadata: Optional[ServerMetadata] = None):
@@ -62,7 +71,7 @@ Details:
         if incident.ai_analysis:
             text += f"\nAI analysis & Troubleshooting:\n{incident.ai_analysis}\n"
 
-        msg.set_content(text)
+        msg.set_content(_truncate_body(text))
 
         escaped_details = "<br>".join(
             f"<b>{html.escape(str(k))}</b>: {html.escape(str(v))}"
@@ -75,8 +84,7 @@ Details:
             if incident.ai_analysis else ""
         )
         badge_html = f"<p><b>Stack:</b> {html.escape(self.metadata.badge())}</p>" if self.metadata else ""
-        msg.add_alternative(
-            f"""\
+        html_body = f"""\
 <html><body>
 <h2>{html.escape(incident.severity)} — {html.escape(incident.title)}</h2>
 <p><b>Server:</b> {html.escape(self.cfg.server_name)}<br>
@@ -87,9 +95,8 @@ Details:
 <h3>Details</h3><p>{escaped_details}</p>
 {ai_html}
 </body></html>
-""",
-            subtype="html",
-        )
+"""
+        msg.add_alternative(_truncate_body(html_body), subtype="html")
 
         try:
             with self._connect() as smtp:

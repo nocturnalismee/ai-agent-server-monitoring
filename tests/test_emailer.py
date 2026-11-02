@@ -174,3 +174,19 @@ def test_send_test_uses_info_severity(monkeypatch):
 
     subject = FakeSMTP.instances[-1].messages[0]["Subject"]
     assert subject == "[INFO] web1 - Server AI Agent test"
+
+
+def test_email_bodies_are_capped_with_truncation_marker(monkeypatch):
+    monkeypatch.setattr(emailer_module.smtplib, "SMTP", FakeSMTP)
+    huge_summary = "Z" * 70000
+
+    assert EmailNotifier(_config(), _logger()).send(_incident(summary=huge_summary)) is True
+
+    msg = FakeSMTP.instances[-1].messages[0]
+    text = msg.get_body(("plain",)).get_content()
+    html = msg.get_body(("html",)).get_content()
+
+    assert len(text.rstrip("\n")) <= 64000
+    assert "[truncated]" in text
+    assert len(html.rstrip("\n")) <= 64000
+    assert "[truncated]" in html

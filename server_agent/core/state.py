@@ -24,6 +24,10 @@ class StateStore:
         self.ssh_failure_persist_threshold = ssh_failure_persist_threshold
         self._last_ssh_failure_save = 0.0
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.state_dir.chmod(0o700)
+        except OSError:
+            pass
         self.data: Dict[str, Any] = self._load()
 
     def _load(self) -> Dict[str, Any]:
