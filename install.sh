@@ -8,8 +8,18 @@ STATE_DIR=/var/lib/server-ai-agent
 LOG_DIR=/var/log/server-ai-agent
 SERVICE_USER=server-agent
 
+STAGING_DIR=""
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 note() { echo "INFO: $*"; }
+
+cleanup_staging() {
+  if [[ -n "${STAGING_DIR:-}" && -d "${STAGING_DIR}" ]]; then
+    rm -rf -- "${STAGING_DIR}"
+  fi
+}
+
+trap cleanup_staging EXIT
 
 require_root() {
   [[ ${EUID} -eq 0 ]] || die "Run this installer as root: sudo ./install.sh"
@@ -192,6 +202,36 @@ print_profile() {
   echo "service profile : auto (resolved at runtime; verify with --check-config after install)"
 }
 
+install_package() {
+  local staging_dir=$1
+  local backup="${APP_DIR}/server_agent.old.$$"
+  local failed=0
+
+  if [[ -e "${backup}" ]]; then
+    rm -rf -- "${backup}"
+  fi
+  if [[ -e "${APP_DIR}/server_agent" ]]; then
+    mv "${APP_DIR}/server_agent" "${backup}"
+  fi
+  if ! mv "${staging_dir}/server_agent" "${APP_DIR}/server_agent"; then
+    failed=1
+  elif ! mv "${staging_dir}/requirements.txt" "${APP_DIR}/requirements.txt"; then
+    failed=1
+  fi
+
+  if [[ ${failed} -eq 1 ]]; then
+    rm -rf -- "${APP_DIR}/server_agent"
+    if [[ -e "${backup}" ]]; then
+      mv "${backup}" "${APP_DIR}/server_agent"
+    fi
+    die "Failed to install the staged package; the previous version was restored."
+  fi
+
+  if [[ -e "${backup}" ]]; then
+    rm -rf -- "${backup}"
+  fi
+}
+
 main() {
   if [[ ${1:-} == --print-platform ]]; then
     print_profile
@@ -225,11 +265,17 @@ main() {
 
   install -d -m 0755 "$APP_DIR" "$ETC_DIR"
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$STATE_DIR" "$LOG_DIR"
-  cp -a server_agent requirements.txt "$APP_DIR"/
+
+  STAGING_DIR=$(mktemp -d "${APP_DIR}.staging.XXXXXX")
+  note "Staging the new package in $STAGING_DIR"
+  cp -a server_agent requirements.txt "$STAGING_DIR"/
+
   "$PYTHON_BIN" -m venv "$APP_DIR/venv"
   "$APP_DIR/venv/bin/pip" install --upgrade pip
-  "$APP_DIR/venv/bin/pip" install --disable-pip-version-check --no-input -r "$APP_DIR/requirements.txt"
+  "$APP_DIR/venv/bin/pip" install --disable-pip-version-check --no-input -r "$STAGING_DIR/requirements.txt"
   "$APP_DIR/venv/bin/python" -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'server-ai-agent.pth').write_text('$APP_DIR\n')"
+
+  install_package "$STAGING_DIR"
 
   if [[ ! -f $ETC_DIR/server-ai-agent.env ]]; then
     install -m 0600 .env.example "$ETC_DIR/server-ai-agent.env"
@@ -246,7 +292,19 @@ main() {
   systemctl daemon-reload
   systemctl enable server-ai-agent
   systemctl enable server-ai-agent-watchdog.timer
+
+  if systemctl is-active --quiet server-ai-agent; then
+    note "Restarting the running server-ai-agent service."
+    systemctl try-restart server-ai-agent
+  fi
+
   check_log_access
+
+  local installed_version
+  installed_version=$(cd "$APP_DIR" && "$APP_DIR/venv/bin/python" -c 'import server_agent; print(server_agent.__version__)' 2>/dev/null || true)
+  if [[ -n "$installed_version" ]]; then
+    note "Installed server-ai-agent version: $installed_version"
+  fi
 
   echo
   echo "Installation complete. Edit: sudo nano $ETC_DIR/server-ai-agent.env"

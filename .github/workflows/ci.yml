@@ -51,3 +51,26 @@ jobs:
         run: python -m pip install pip-audit==2.10.1
       - name: Audit runtime dependencies
         run: python -m pip_audit -r requirements.txt
+
+  test-rhel:
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    steps:
+      - name: Install git for checkout
+        run: dnf install -y git
+      - uses: actions/checkout@v4
+      - name: Install Python 3.11 and dependencies
+        run: |
+          dnf install -y python3.11 python3.11-pip
+          python3.11 -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python3.11 -m pytest -q
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shellcheck installers
+        run: shellcheck -S error install.sh uninstall.sh

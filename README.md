@@ -315,6 +315,10 @@ Required: cpanel, mysql, exim, dovecot
 Optional: named, httpd, lsws, cphulkd, pure-ftpd, clamd, spamd, redis, php-fpm
 ```
 
+Related read-only commands: `--version` prints the installed agent version and
+`--status` prints the last cycle status. Neither loads the environment file; see
+[Validate & Test](#4-validate--test) for runnable examples.
+
 ### SMTP Email
 
 ```dotenv
@@ -371,6 +375,22 @@ sudo systemd-run --wait --pipe --collect \
   /opt/server-ai-agent/venv/bin/python -m server_agent --check-config
 ```
 *Expected output: `Configuration OK`*
+
+Print the installed agent version (no configuration is loaded):
+
+```bash
+/opt/server-ai-agent/venv/bin/python -m server_agent --version
+```
+*Expected output: `server-ai-agent 1.0.0`*
+
+Show the last monitoring cycle status written by the running agent (no
+configuration is loaded):
+
+```bash
+/opt/server-ai-agent/venv/bin/python -m server_agent --status
+```
+*Expected output: the raw `status.json` object. If no cycle has run yet, the
+command reports the missing `status.json` path and exits non-zero.*
 
 Send a test notification to your chosen channel:
 
@@ -467,7 +487,9 @@ sudo ./install.sh
 
 Re-running the installer refreshes dependencies, systemd units (including the
 watchdog service and timer), and the logrotate policy, while preserving your
-existing environment file.
+existing environment file. The new package is staged and swapped into place; if
+the service is already running, the installer restarts it with
+`systemctl try-restart` after the upgrade. Fresh installs are still left stopped.
 
 Service monitoring does not switch to profiles automatically on upgrade. A
 non-empty legacy `SERVICES` list written by an older installer still wins at
@@ -518,6 +540,11 @@ sudo ./uninstall.sh
   `sudo journalctl -u server-ai-agent -n 100 --no-pager`, then run
   `--check-config` through the installed environment using the `systemd-run`
   form in [Validate & Test](#4-validate--test).
+- **Confirm the installed build or last cycle**: run
+  `/opt/server-ai-agent/venv/bin/python -m server_agent --version` to print the
+  installed version, or `... --status` to print the last cycle status. Neither
+  loads the environment file; `--status` reads
+  `/var/lib/server-ai-agent/status.json` and exits non-zero if it is missing.
 - **Logs are unreadable**: grant read access through the distro/panel group
   policy (for example `adm` or `systemd-journal`) or a reviewed ACL. Do not run
   the agent as root.
@@ -587,6 +614,7 @@ python -m pytest -q --cov=server_agent --cov-report=term-missing  # coverage (fa
 python -m ruff check .     # lint + import order
 pip-audit -r requirements.txt   # audit runtime deps (Python >= 3.10)
 python -m server_agent --check-config  # local .env; use systemd-run for installed env
+python -m server_agent --version       # print the package version
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on Python 3.9–3.12 for every
@@ -595,6 +623,8 @@ push to `main` and every pull request:
 - `lint`: `ruff check .`
 - `test`: `pytest` with a 55% coverage gate
 - `security`: `pip-audit -r requirements.txt`
+- `test-rhel`: `pytest` on Python 3.11 in a Rocky Linux 9 container
+- `shellcheck`: `shellcheck -S error install.sh uninstall.sh`
 
 The runtime only depends on `psutil` and `python-dotenv`; `pytest`,
 `pytest-cov`, `ruff`, and `pip-audit` are development-only.
