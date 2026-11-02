@@ -9,7 +9,9 @@ from .models import Incident
 REDACTED = "[REDACTED]"
 _SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|"
-    r"password|passwd|pwd|secret|cookie|private[_-]?key|database[_-]?url|dsn)",
+    r"password|passwd|pwd|secret|cookie|private[_-]?key|database[_-]?url|dsn|"
+    r"\bsession\b|\bcredential\b|\bpassphrase\b|\bdb[_-]?pass\b|"
+    r"\baws[_-]?access[_-]?key)",
     re.IGNORECASE,
 )
 _URL_SECRET = re.compile(
@@ -19,7 +21,8 @@ _URL_SECRET = re.compile(
 )
 _HEADER_SECRET = re.compile(
     r"(?im)(\b(?:proxy-)?authorization|\b(?:set-)?cookie|\bx-api-key|\bx-auth-token)"
-    r"\s*:\s*[^\r\n]+"
+    r"[\"']?\s*:\s*"
+    r"(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\r\n]+)"
 )
 _ASSIGNMENT_SECRET = re.compile(
     r"((?<![A-Za-z0-9])(?:\"|')?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
@@ -27,12 +30,12 @@ _ASSIGNMENT_SECRET = re.compile(
     r"passphrase|credential|session|password|passwd|private[_-]?key|database[_-]?url|"
     r"pass|secret|token|cookie|pwd|dsn)"
     r"(?:\"|')?\s*[:=]\s*)"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;=&]+)",
+    r"(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s,;=&]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
 _CONNECTION_PASSWORD = re.compile(
-    r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@]+:)[^@\s/]+(@)",
+    r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@]*:)[^@\s/]+(@)",
 )
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)",

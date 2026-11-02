@@ -1,7 +1,12 @@
 import pytest
 
 from server_agent.models import Incident
-from server_agent.redaction import REDACTED, sanitize_incident, sanitize_text
+from server_agent.redaction import (
+    REDACTED,
+    sanitize_incident,
+    sanitize_text,
+    sanitize_value,
+)
 
 
 def test_redacts_credentials_but_retains_log_context():
@@ -58,9 +63,11 @@ def test_redacts_connection_password_for_any_scheme(source, secret):
 
 
 def test_redacts_cookie_header_mid_line_without_leaving_session_id():
-    result, changed = sanitize_text("< Set-Cookie: PHPSESSID=abc123; path=/")
+    result, changed = sanitize_text("< Set-Cookie: PHPSESSID=abc123def456; path=/")
     assert changed
     assert "abc123" not in result
+    assert "def456" not in result
+    assert "abc123def456" not in result
     assert "Set-Cookie" in result
     assert REDACTED in result
 
@@ -166,3 +173,72 @@ def test_sanitize_incident_redacts_fingerprint():
     assert "supersecret" not in safe.fingerprint
     assert REDACTED in safe.fingerprint
     assert incident.fingerprint == "auth:token=supersecret"
+
+
+@pytest.mark.parametrize(
+    "source,secret",
+    [
+        ('{"Authorization": "Basic dXNlcjpwYXNz"}', "dXNlcjpwYXNz"),
+        ('{"Proxy-Authorization": "Basic cHJveHk6c2VjcmV0"}', "cHJveHk6c2VjcmV0"),
+    ],
+)
+def test_redacts_json_encoded_auth_headers(source, secret):
+    result, changed = sanitize_text(source)
+    assert changed
+    assert secret not in result
+    assert "Authorization" in result
+    assert result.endswith("}")
+    assert REDACTED in result
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["db_pass", "session", "credential", "passphrase", "aws_access_key_id"],
+)
+def test_redacts_expanded_sensitive_detail_keys(key):
+    value, changed = sanitize_value("structured-secret", key)
+    assert changed
+    assert value == REDACTED
+
+
+def test_sanitize_incident_redacts_expanded_sensitive_detail_keys():
+    incident = Incident(
+        kind="health",
+        severity="WARNING",
+        title="Test",
+        summary="Test",
+        fingerprint="test",
+        details={
+            "db_pass": "db-secret",
+            "session": "session-secret",
+            "credential": "credential-secret",
+            "passphrase": "passphrase-secret",
+            "aws_access_key_id": "aws-key-secret",
+        },
+    )
+    safe = sanitize_incident(incident)
+    for key in incident.details:
+        assert safe.details[key] == REDACTED
+        assert incident.details[key] != REDACTED
+
+
+def test_redacts_connection_password_with_empty_username():
+    result, changed = sanitize_text("redis://:onlypass@host:6379/0")
+    assert changed
+    assert "onlypass" not in result
+    assert REDACTED in result
+
+
+def test_redacts_assignment_value_with_escaped_quotes():
+    source = '{"password":"a\\"bSECRET"}'
+    result, changed = sanitize_text(source)
+    assert changed
+    assert "bSECRET" not in result
+    assert result.endswith("}")
+
+
+def test_bare_hex_string_without_context_is_not_redacted():
+    source = "checksum " + "0123456789abcdef" * 2
+    result, changed = sanitize_text(source)
+    assert changed is False
+    assert result == source
