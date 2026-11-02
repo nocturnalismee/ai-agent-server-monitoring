@@ -1,10 +1,17 @@
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=Server AI Agent heartbeat watchdog
 Documentation=https://github.com/nocturnalismee/ai-agent-server-monitoring
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+MemoryMax=256M
+TasksMax=64
+CPUQuota=20%
+StandardOutput=journal
+StandardError=journal
 Type=oneshot
 User=server-agent
 Group=server-agent

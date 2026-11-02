@@ -309,3 +309,156 @@ def test_ai_result_is_sanitized_before_assignment(monkeypatch):
     assert "[REDACTED]" in sent[0].ai_analysis
     agent._shutdown_worker(timeout=2)
     assert not agent._alert_worker.is_alive()
+
+
+class _FullQueue:
+    def put_nowait(self, _item):
+        raise queue.Full
+
+
+class _CapturingQueue:
+    def __init__(self):
+        self.items = []
+
+    def put_nowait(self, item):
+        self.items.append(item)
+
+    def qsize(self):
+        return len(self.items)
+
+
+def test_dispatch_counts_seen_and_dropped_when_queue_is_full():
+    agent = object.__new__(Agent)
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    agent._alert_queue = _FullQueue()
+
+    agent.dispatch(SimpleNamespace(fingerprint="fp:full"))
+
+    assert agent._counter_snapshot() == {
+        "seen": 1,
+        "sent": 0,
+        "suppressed": 0,
+        "dropped": 1,
+        "delivery_errors": 0,
+    }
+
+
+def _process_agent(**overrides):
+    from server_agent.core.models import Incident
+
+    agent = object.__new__(Agent)
+    agent.cfg = SimpleNamespace(
+        alert_cooldown_seconds=900,
+        escalation_min_severity="CRITICAL",
+        alert_rate_limit_per_minute=0,
+    )
+    agent.log = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    agent.state = SimpleNamespace(
+        can_alert=lambda fingerprint, cooldown: True,
+        mark_alert_sent=lambda fingerprint, cooldown: None,
+    )
+    agent.evidence_collector = None
+    agent.ai = SimpleNamespace(analyze=lambda incident: "", close=lambda: None)
+    agent.notifier = SimpleNamespace(send=lambda incident: True)
+    agent.escalation_notifier = None
+    for name, value in overrides.items():
+        setattr(agent, name, value)
+    return agent, Incident(
+        kind="health",
+        severity="INFO",
+        title="title",
+        summary="summary",
+        fingerprint="fp:1",
+    )
+
+
+def test_process_counts_suppressed_duplicate():
+    agent, incident = _process_agent()
+    agent.state.can_alert = lambda fingerprint, cooldown: False
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["suppressed"] == 1
+    assert agent._counter_snapshot()["sent"] == 0
+
+
+def test_process_counts_dropped_when_rate_limited():
+    agent, incident = _process_agent()
+    agent._alert_rate_limited = lambda: True
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["dropped"] == 1
+
+
+def test_process_counts_sent_when_delivered():
+    agent, incident = _process_agent()
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["sent"] == 1
+    assert agent._counter_snapshot()["delivery_errors"] == 0
+
+
+def test_process_counts_delivery_error_when_send_fails():
+    agent, incident = _process_agent()
+    agent.notifier = SimpleNamespace(send=lambda incident: False)
+
+    agent._process(incident)
+
+    assert agent._counter_snapshot()["sent"] == 0
+    assert agent._counter_snapshot()["delivery_errors"] == 1
+
+
+def test_run_once_writes_status_file_with_counters_and_durations(tmp_path):
+    import json
+
+    agent = _bare_agent()
+    agent.cfg = SimpleNamespace(
+        server_name="srv1",
+        state_dir=tmp_path,
+    )
+    agent.counters = {
+        "seen": 2,
+        "sent": 1,
+        "suppressed": 0,
+        "dropped": 1,
+        "delivery_errors": 0,
+    }
+    agent.state = SimpleNamespace(set_heartbeat=lambda: None)
+    agent.health = SimpleNamespace(collect=lambda: [])
+    agent.web = SimpleNamespace(collect=lambda: [])
+    agent.ssh = SimpleNamespace(collect=lambda: [])
+    agent.kernel = SimpleNamespace(collect=lambda: [])
+    agent.drain = lambda: None
+
+    agent.run_once()
+
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["version"] == agent_module_version()
+    assert status["server_name"] == "srv1"
+    assert status["queue_depth"] == 0
+    assert status["counters"] == agent.counters
+    assert set(status["cycle_durations_ms"]) == {"health", "logs"}
+    assert status["cycle_durations_ms"]["health"] >= 0
+    assert status["cycle_durations_ms"]["logs"] >= 0
+    assert status["updated_at"]
+    assert status["last_cycle_ts"]
+
+    agent._shutdown_worker(timeout=2)
+
+
+def agent_module_version():
+    import server_agent
+
+    return server_agent.__version__

@@ -260,3 +260,40 @@ def test_check_config_legacy_services_skip_panel_detection(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Required: nginx" in out
     assert calls == []
+
+
+def test_version_prints_and_skips_config(monkeypatch, capsys):
+    import server_agent
+
+    monkeypatch.setattr(
+        agent_module, "Config", lambda: (_ for _ in ()).throw(AssertionError("config used"))
+    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--version"])
+
+    assert agent_module.main() == 0
+    assert capsys.readouterr().out.strip() == f"server-ai-agent {server_agent.__version__}"
+
+
+def test_status_prints_raw_file_without_config(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("STATE_DIR", str(tmp_path))
+    raw = '{"version": "1.0.0", "queue_depth": 0}\n'
+    (tmp_path / "status.json").write_text(raw)
+    monkeypatch.setattr(
+        agent_module, "Config", lambda: (_ for _ in ()).throw(AssertionError("config used"))
+    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--status"])
+
+    assert agent_module.main() == 0
+    assert capsys.readouterr().out == raw
+
+
+def test_status_missing_file_reports_path_without_config(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        agent_module, "Config", lambda: (_ for _ in ()).throw(AssertionError("config used"))
+    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--status"])
+
+    assert agent_module.main() == 1
+    err = capsys.readouterr().err
+    assert f"No status available at {tmp_path / 'status.json'}" in err

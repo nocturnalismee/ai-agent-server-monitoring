@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import queue
 import signal
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
+from . import __version__
 from .ai.analyzer import AIAnalyzer
 from .collectors.evidence import EvidenceCollector
 from .collectors.filetail import FileTailer
@@ -34,6 +39,37 @@ _HEARTBEAT_WRITE_SECONDS = 30.0
 _HEARTBEAT_FINGERPRINT = "agent:heartbeat"
 _ALERT_RATE_WINDOW_SECONDS = 60.0
 _SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
+_DEFAULT_STATE_DIR = Path("/var/lib/server-ai-agent")
+_COUNTER_NAMES = ("seen", "sent", "suppressed", "dropped", "delivery_errors")
+
+
+def _status_path() -> Path:
+    return Path(os.getenv("STATE_DIR", str(_DEFAULT_STATE_DIR))) / "status.json"
+
+
+def _atomic_write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".status-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _print_status() -> int:
+    path = _status_path()
+    try:
+        sys.stdout.write(path.read_text())
+    except (OSError, UnicodeError):
+        print(f"No status available at {path}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _severity_at_least(severity: str, minimum: str) -> bool:
@@ -194,6 +230,9 @@ class Agent:
             cfg, self.log, metadata=self.metadata
         )
         self.running = True
+        self.counters = {name: 0 for name in _COUNTER_NAMES}
+        self._counter_lock = threading.Lock()
+        self.cycle_durations_ms = {"health": 0.0, "logs": 0.0}
 
         # Alerts (evidence collection, AI triage, delivery) may block on network
         # I/O. Process them on a single background worker so monitoring cycles
@@ -211,11 +250,43 @@ class Agent:
     def stop(self, *_):
         self.running = False
 
+    def _count(self, name: str) -> None:
+        lock = getattr(self, "_counter_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._counter_lock = lock
+        with lock:
+            counters = getattr(self, "counters", None)
+            if counters is None:
+                counters = {key: 0 for key in _COUNTER_NAMES}
+                self.counters = counters
+            counters[name] += 1
+
+    def _durations(self):
+        durations = getattr(self, "cycle_durations_ms", None)
+        if durations is None:
+            durations = {"health": 0.0, "logs": 0.0}
+            self.cycle_durations_ms = durations
+        return durations
+
+    def _counter_snapshot(self):
+        counters = getattr(self, "counters", None)
+        if counters is None:
+            counters = {key: 0 for key in _COUNTER_NAMES}
+            self.counters = counters
+        lock = getattr(self, "_counter_lock", None)
+        if lock is None:
+            return {key: int(counters.get(key, 0)) for key in _COUNTER_NAMES}
+        with lock:
+            return {key: int(counters.get(key, 0)) for key in _COUNTER_NAMES}
+
     def dispatch(self, incident):
         """Queue an incident for asynchronous processing."""
+        self._count("seen")
         try:
             self._alert_queue.put_nowait(incident)
         except queue.Full:
+            self._count("dropped")
             self.log.warning(
                 "Alert queue full; dropping incident: %s", incident.fingerprint
             )
@@ -261,10 +332,12 @@ class Agent:
         if not self.state.can_alert(
             incident.fingerprint, self.cfg.alert_cooldown_seconds
         ):
+            self._count("suppressed")
             self.log.info("Suppressed duplicate alert: %s", incident.fingerprint)
             return
 
         if self._alert_rate_limited():
+            self._count("dropped")
             self.log.warning(
                 "Alert rate limit reached; dropping alert: %s", incident.fingerprint
             )
@@ -296,9 +369,12 @@ class Agent:
             if self.escalation_notifier.send(external_incident):
                 delivered = True
         if delivered:
+            self._count("sent")
             self.state.mark_alert_sent(
                 incident.fingerprint, self.cfg.alert_cooldown_seconds
             )
+        else:
+            self._count("delivery_errors")
 
     def drain(self):
         """Block until every queued incident has been processed."""
@@ -322,16 +398,49 @@ class Agent:
         except Exception:
             self.log.exception("Monitor failed: %s", name)
 
+    def _run_group(self, monitors):
+        started = time.monotonic()
+        for name, monitor in monitors:
+            self._run_monitor(name, monitor)
+        return round((time.monotonic() - started) * 1000, 2)
+
+    def _write_status(self) -> None:
+        cfg = getattr(self, "cfg", None)
+        state_dir = getattr(cfg, "state_dir", None) if cfg is not None else None
+        if state_dir is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        durations = self._durations()
+        payload = {
+            "version": __version__,
+            "server_name": cfg.server_name,
+            "updated_at": now,
+            "last_cycle_ts": now,
+            "cycle_durations_ms": {
+                "health": durations.get("health", 0.0),
+                "logs": durations.get("logs", 0.0),
+            },
+            "queue_depth": int(self._alert_queue.qsize()),
+            "counters": self._counter_snapshot(),
+        }
+        try:
+            _atomic_write_json(Path(state_dir) / "status.json", payload)
+        except OSError:
+            self.log.debug("Failed to write status.json", exc_info=True)
+
     def run_once(self):
         try:
             self.state.set_heartbeat()
         except Exception:
             self.log.exception("Failed to update heartbeat")
-        self._run_monitor("health", self.health)
-        self._run_monitor("web", self.web)
-        self._run_monitor("ssh", self.ssh)
-        self._run_monitor("kernel", self.kernel)
+        self.cycle_durations_ms = {
+            "health": self._run_group([("health", self.health)]),
+            "logs": self._run_group(
+                [("web", self.web), ("ssh", self.ssh), ("kernel", self.kernel)]
+            ),
+        }
         self.drain()
+        self._write_status()
 
     def run(self):
         badge = f" [{self.metadata.badge()}]" if self.metadata else ""
@@ -357,17 +466,25 @@ class Agent:
                     last_heartbeat = now
                 except Exception:
                     self.log.exception("Failed to update heartbeat")
+            ran = False
             if now - last_health >= self.cfg.health_interval:
                 # Advance first: a failing collector must wait for its next
                 # interval instead of retrying at the 1 Hz loop rate.
                 last_health = now
-                self._run_monitor("health", self.health)
+                self._durations()["health"] = self._run_group(
+                    [("health", self.health)]
+                )
+                ran = True
 
             if now - last_logs >= self.cfg.log_interval:
                 last_logs = now
-                self._run_monitor("web", self.web)
-                self._run_monitor("ssh", self.ssh)
-                self._run_monitor("kernel", self.kernel)
+                self._durations()["logs"] = self._run_group(
+                    [("web", self.web), ("ssh", self.ssh), ("kernel", self.kernel)]
+                )
+                ran = True
+
+            if ran:
+                self._write_status()
 
             time.sleep(1)
 
@@ -409,7 +526,16 @@ def main():
     parser.add_argument("--test-email", action="store_true", help="Deprecated alias for --test-notification when email is selected")
     parser.add_argument("--check-config", action="store_true", help="Validate config and exit")
     parser.add_argument("--check-heartbeat", action="store_true", help="Run the heartbeat watchdog and exit")
+    parser.add_argument("--status", action="store_true", help="Print the last cycle status and exit")
+    parser.add_argument("--version", action="store_true", help="Print the agent version and exit")
     args = parser.parse_args()
+
+    if args.version:
+        print(f"server-ai-agent {__version__}")
+        return 0
+
+    if args.status:
+        return _print_status()
 
     try:
         cfg = Config()
