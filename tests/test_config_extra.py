@@ -507,7 +507,7 @@ def test_normalized_invalid_alert_channel_still_fails_validation():
 def test_normalized_clamps_negative_alert_cooldown():
     cfg, warnings = _valid_config(alert_cooldown_seconds=-5).normalized()
 
-    assert cfg.alert_cooldown_seconds == 0
+    assert cfg.alert_cooldown_seconds == 1
     assert any("ALERT_COOLDOWN_SECONDS" in warning for warning in warnings)
     cfg.validate()
 

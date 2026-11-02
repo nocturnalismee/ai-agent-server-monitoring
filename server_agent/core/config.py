@@ -314,7 +314,7 @@ class Config:
         _clamp_int("AI_MAX_OUTPUT_TOKENS", 1, 8192)
         _clamp_int("AI_RATE_LIMIT_PER_MINUTE", 1, 120)
         _clamp_int("ALERT_RATE_LIMIT_PER_MINUTE", 0, 600)
-        _clamp_int("ALERT_COOLDOWN_SECONDS", 0, 86400)
+        _clamp_int("ALERT_COOLDOWN_SECONDS", 1, 86400)
 
         for warning_field, critical_field in (
             ("cpu_warning", "cpu_critical"),
