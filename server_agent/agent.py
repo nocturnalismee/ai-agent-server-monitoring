@@ -445,11 +445,23 @@ class Agent:
             self.state.mark_alert_sent(
                 incident.fingerprint, self.cfg.alert_cooldown_seconds
             )
+            self._remove_spooled(external_incident.fingerprint)
         else:
             self._count("delivery_errors")
             self._spool_incident(external_incident)
         if delivery_error and delivered:
             self._count("delivery_errors")
+
+    def _remove_spooled(self, fingerprint: str) -> None:
+        spool = getattr(self, "spool", None)
+        if spool is None:
+            return
+        try:
+            spool.remove(IncidentSpool.key_for(fingerprint))
+        except Exception:
+            debug = getattr(getattr(self, "log", None), "debug", None)
+            if debug is not None:
+                debug("Failed to remove spooled incident", exc_info=True)
 
     def _spool_incident(self, incident) -> None:
         spool = getattr(self, "spool", None)
@@ -468,13 +480,29 @@ class Agent:
             return
         for key, payload, _attempts in spool.due():
             try:
-                incident = _incident_from_dict(payload)
+                incident = sanitize_incident(_incident_from_dict(payload))
             except Exception:
                 debug = getattr(getattr(self, "log", None), "debug", None)
                 if debug is not None:
                     debug("Discarding corrupt spooled incident: %s", key)
                 spool.remove(key)
                 continue
+
+            if not self.state.can_alert(
+                incident.fingerprint, self.cfg.alert_cooldown_seconds
+            ):
+                debug = getattr(getattr(self, "log", None), "debug", None)
+                if debug is not None:
+                    debug("Discarding superseded spooled incident: %s", key)
+                spool.remove(key)
+                continue
+
+            if self._alert_rate_limited():
+                debug = getattr(getattr(self, "log", None), "debug", None)
+                if debug is not None:
+                    debug("Alert rate limit reached; deferring spooled incident: %s", key)
+                break
+            self._record_alert_send()
 
             delivered = False
             delivery_error = False

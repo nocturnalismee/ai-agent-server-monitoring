@@ -502,3 +502,35 @@ def test_normalized_invalid_alert_channel_still_fails_validation():
 
     with pytest.raises(ValueError, match="ALERT_CHANNEL must be email or telegram"):
         cfg.validate()
+
+
+def test_normalized_clamps_negative_alert_cooldown():
+    cfg, warnings = _valid_config(alert_cooldown_seconds=-5).normalized()
+
+    assert cfg.alert_cooldown_seconds == 0
+    assert any("ALERT_COOLDOWN_SECONDS" in warning for warning in warnings)
+    cfg.validate()
+
+
+def test_normalized_clamps_negative_evidence_lines():
+    cfg, warnings = _valid_config(evidence_lines=-3).normalized()
+
+    assert cfg.evidence_lines == 1
+    assert any("EVIDENCE_LINES" in warning for warning in warnings)
+    cfg.validate()
+
+
+def test_normalized_clamps_remaining_reliability_limits():
+    cfg, warnings = _valid_config(
+        evidence_lines=999,
+        web_error_batch_threshold=0,
+        ssh_failed_threshold=999,
+        ssh_failed_window_seconds=0,
+    ).normalized()
+
+    assert cfg.evidence_lines == 200
+    assert cfg.web_error_batch_threshold == 1
+    assert cfg.ssh_failed_threshold == 100
+    assert cfg.ssh_failed_window_seconds == 1
+    assert len(warnings) == 4
+    cfg.validate()

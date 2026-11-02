@@ -1,5 +1,7 @@
 import queue
 import threading
+import time
+from collections import deque
 from types import SimpleNamespace
 
 from server_agent.agent import Agent
@@ -586,6 +588,73 @@ def test_retry_uses_mark_attempt_when_delivery_still_fails(tmp_path):
     )
     assert stored["attempts"] == 1
     assert agent.spool.due() == []
+
+
+def test_successful_delivery_removes_spooled_duplicate(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.spool.add(incident)
+    delivered = []
+    agent.notifier = SimpleNamespace(
+        send=lambda stored: delivered.append(stored) or True
+    )
+
+    agent._process(incident)
+    agent._retry_spooled()
+
+    assert len(delivered) == 1
+    assert agent.spool.due() == []
+
+
+def test_retry_removes_superseded_entry_when_cooldown_is_active(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.spool.add(incident)
+    agent.state.can_alert = lambda fingerprint, cooldown: False
+    delivered = []
+    agent.notifier = SimpleNamespace(
+        send=lambda stored: delivered.append(stored) or True
+    )
+
+    agent._retry_spooled()
+
+    assert delivered == []
+    assert agent.spool.due() == []
+
+
+def test_retry_defers_without_burning_attempt_when_rate_limited(tmp_path):
+    from server_agent.core.spool import IncidentSpool
+
+    agent, incident = _process_agent()
+    agent.spool = IncidentSpool(tmp_path)
+    agent.spool.add(incident)
+    agent.cfg.alert_rate_limit_per_minute = 1
+    agent._alert_send_times = deque([time.monotonic()])
+    delivered = []
+    agent.notifier = SimpleNamespace(
+        send=lambda stored: delivered.append(stored) or True
+    )
+
+    agent._retry_spooled()
+
+    key = IncidentSpool.key_for("fp:1")
+    stored = __import__("json").loads(
+        (agent.spool.directory / f"{key}.json").read_text()
+    )
+    assert delivered == []
+    assert stored["attempts"] == 0
+    assert len(agent.spool.due()) == 1
+
+    agent._alert_send_times.clear()
+    agent._retry_spooled()
+
+    assert len(delivered) == 1
+    assert agent.spool.due() == []
+    assert agent._alert_send_times
 
 
 def test_run_once_writes_status_when_drain_fails(tmp_path):

@@ -296,12 +296,16 @@ class Config:
             if clamped != value:
                 changes[name.lower()] = clamped
 
+        _clamp_int("EVIDENCE_LINES", 1, 200)
         _clamp_int("HEALTH_INTERVAL", 10, None)
         _clamp_int("LOG_INTERVAL", 2, None)
         _clamp_int("HEARTBEAT_STALE_SECONDS", 60, None)
         _clamp_int("MAX_LOG_LINES_PER_CYCLE", 1, 10000)
         _clamp_int("MAX_LOG_LINE_CHARS", 256, 65536)
         _clamp_int("MAX_LOG_SAMPLE_CHARS", 100, 4096)
+        _clamp_int("WEB_ERROR_BATCH_THRESHOLD", 1, 1000)
+        _clamp_int("SSH_FAILED_THRESHOLD", 1, 100)
+        _clamp_int("SSH_FAILED_WINDOW_SECONDS", 1, 86400)
         _clamp_int("SSH_FAILURE_TRACKED_IPS_MAX", 1, 100000)
         _clamp_int("SERVICE_FAILURE_THRESHOLD", 1, 10)
         _clamp_int("SMTP_TIMEOUT", 1, None)
@@ -310,6 +314,7 @@ class Config:
         _clamp_int("AI_MAX_OUTPUT_TOKENS", 1, 8192)
         _clamp_int("AI_RATE_LIMIT_PER_MINUTE", 1, 120)
         _clamp_int("ALERT_RATE_LIMIT_PER_MINUTE", 0, 600)
+        _clamp_int("ALERT_COOLDOWN_SECONDS", 0, 86400)
 
         for warning_field, critical_field in (
             ("cpu_warning", "cpu_critical"),

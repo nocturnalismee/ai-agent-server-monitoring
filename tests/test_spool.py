@@ -43,7 +43,7 @@ def _read_entry(spool, key):
     return json.loads((spool.directory / f"{key}.json").read_text())
 
 
-def test_add_stores_sanitized_payload_and_due_returns_it(tmp_path, monkeypatch):
+def test_add_stores_payload_and_due_returns_it(tmp_path, monkeypatch):
     spool, clock = _spool(tmp_path, monkeypatch)
 
     spool.add(_incident())
@@ -63,6 +63,19 @@ def test_add_stores_sanitized_payload_and_due_returns_it(tmp_path, monkeypatch):
     assert stored["next_attempt_at"] == clock.now
 
 
+def test_add_sanitizes_secrets_before_storing(tmp_path, monkeypatch):
+    spool, _ = _spool(tmp_path, monkeypatch)
+
+    spool.add(_incident(summary="connection password=supersecret"))
+
+    key = _key("fp:1")
+    raw = (spool.directory / f"{key}.json").read_text()
+    stored = _read_entry(spool, key)
+
+    assert "supersecret" not in raw
+    assert "[REDACTED]" in stored["incident"]["summary"]
+
+
 def test_add_replaces_existing_entry_for_same_fingerprint(tmp_path, monkeypatch):
     spool, _ = _spool(tmp_path, monkeypatch)
 
@@ -72,6 +85,23 @@ def test_add_replaces_existing_entry_for_same_fingerprint(tmp_path, monkeypatch)
     entries = spool.due()
     assert len(entries) == 1
     assert entries[0][1]["summary"] == "second"
+
+
+def test_repeated_add_preserves_attempts_and_backoff(tmp_path, monkeypatch):
+    spool, clock = _spool(tmp_path, monkeypatch)
+    spool.add(_incident())
+    key = _key("fp:1")
+    spool.mark_attempt(key)
+    before = _read_entry(spool, key)
+
+    clock.now += 10
+    spool.add(_incident(summary="replacement"))
+    after = _read_entry(spool, key)
+
+    assert after["incident"]["summary"] == "replacement"
+    assert after["attempts"] == before["attempts"] == 1
+    assert after["created_at"] == before["created_at"]
+    assert after["next_attempt_at"] == before["next_attempt_at"]
 
 
 def test_mark_attempt_applies_exponential_backoff(tmp_path, monkeypatch):

@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .redaction import sanitize_incident
+
 
 class IncidentSpool:
     """Durable, best-effort storage for incidents that could not be delivered."""
@@ -97,14 +99,21 @@ class IncidentSpool:
     def add(self, incident) -> None:
         with self._lock:
             try:
+                safe = sanitize_incident(incident)
+                key = self.key_for(safe.fingerprint)
+                existing = self._read(self._path(key))
                 now = time.time()
                 payload = {
-                    "incident": incident.as_dict(),
+                    "incident": safe.as_dict(),
                     "attempts": 0,
                     "created_at": now,
                     "next_attempt_at": now,
                 }
-                self._write(self.key_for(incident.fingerprint), payload)
+                if existing is not None:
+                    payload["attempts"] = existing["attempts"]
+                    payload["created_at"] = existing["created_at"]
+                    payload["next_attempt_at"] = existing["next_attempt_at"]
+                self._write(key, payload)
                 self._evict()
             except Exception:
                 self._debug("Failed to spool incident", exc_info=True)
