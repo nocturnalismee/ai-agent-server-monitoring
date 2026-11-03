@@ -68,10 +68,42 @@ def test_empty_metadata_values_use_fallbacks():
         ({"panel": "aaPanel"}, "bt status"),
         ({"panel": "CloudPanel"}, "clpctl"),
         ({"panel": "Plesk"}, "plesk bin"),
+        ({"panel": "DirectAdmin"}, "CustomBuild"),
+        ({"panel": "HestiaCP"}, "v-list-sys-services"),
+        ({"panel": "VestaCP"}, "v-list-sys-services"),
+        ({"panel": "RunCloud"}, "runcloud-agent"),
     ],
 )
 def test_environment_specific_hints(overrides, expected):
     assert expected in build_system_instruction(_metadata(**overrides))
+
+
+def test_web_and_database_specific_hints():
+    nginx_prompt = build_system_instruction(_metadata(web_server="Nginx", database="MySQL 8"))
+    assert "nginx -t" in nginx_prompt
+    assert "mysqladmin ping" in nginx_prompt
+
+    apache_prompt = build_system_instruction(
+        _metadata(web_server="Apache", database="PostgreSQL")
+    )
+    assert "apachectl configtest" in apache_prompt
+    assert "pg_isready" in apache_prompt
+
+    lsws_prompt = build_system_instruction(
+        _metadata(panel="Standalone", web_server="LiteSpeed")
+    )
+    assert "lswsctrl status" in lsws_prompt
+
+
+def test_firewall_specific_hints():
+    csf_prompt = build_system_instruction(_metadata(firewall="csf"))
+    assert "csf -d <IP>" in csf_prompt
+
+    ufw_prompt = build_system_instruction(_metadata(firewall="ufw"))
+    assert "ufw deny from <IP>" in ufw_prompt
+
+    firewalld_prompt = build_system_instruction(_metadata(firewall="firewalld"))
+    assert "firewall-cmd" in firewalld_prompt
 
 
 def test_instructions_interpolate_os_and_panel():
@@ -87,3 +119,11 @@ def test_security_rule_is_present():
     assert "SECURITY RULE" in text
     assert "prompt-injections" in text
     assert "rm -rf" in text
+
+
+def test_generic_prompt_includes_security_rule():
+    generic = build_system_instruction()
+
+    assert "SECURITY RULE" in generic
+    assert "prompt-injections" in generic
+    assert "rm -rf" in generic
