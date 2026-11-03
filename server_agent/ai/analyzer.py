@@ -114,7 +114,29 @@ class AIAnalyzer:
         text = message.get("content", "")
         return text.strip() if isinstance(text, str) else ""
 
+    def _check_truncation(self, response: Dict[str, Any]) -> None:
+        truncated = False
+        if self.provider == "gemini":
+            candidates = response.get("candidates", [])
+            if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+                truncated = candidates[0].get("finishReason") == "MAX_TOKENS"
+        elif self.provider in {"claude", "anthropic"}:
+            truncated = response.get("stop_reason") == "max_tokens"
+        else:
+            choices = response.get("choices", [])
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                truncated = choices[0].get("finish_reason") == "length"
+
+        if truncated:
+            self.logger.warning(
+                "%s response reached token limit (%d). "
+                "Consider increasing AI_MAX_OUTPUT_TOKENS in .env.",
+                self.provider.title(),
+                self.max_tokens,
+            )
+
     def _extract_text(self, response: Dict[str, Any]) -> str:
+        self._check_truncation(response)
         if self.provider == "gemini":
             return self._extract_gemini_text(response)
         if self.provider in {"claude", "anthropic"}:

@@ -12,6 +12,7 @@ CPUQuota=20%
 StandardOutput=journal
 StandardError=journal
 Type=notify
+NotifyAccess=all
 WatchdogSec=90
 User=server-agent
 Group=server-agent
