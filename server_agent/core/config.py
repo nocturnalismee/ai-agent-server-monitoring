@@ -176,13 +176,28 @@ class Config:
         "ESCALATION_MIN_SEVERITY", "CRITICAL"
     ).strip().upper()
 
-    ai_enabled: bool = _bool("AI_ENABLED", _bool("GEMINI_ENABLED", False))
-    ai_provider: str = (
-        _env_str("AI_PROVIDER") or ("gemini" if _env_str("GEMINI_API_KEY") else "deepseek")
-    ).lower()
-    ai_api_key: str = _env_str("AI_API_KEY") or _env_str("GEMINI_API_KEY")
-    ai_model: str = _env_str("AI_MODEL") or _env_str("GEMINI_MODEL")
-    ai_base_url: str = _env_str("AI_BASE_URL")
+    ai_enabled: bool = field(
+        default_factory=lambda: _bool("AI_ENABLED", _bool("GEMINI_ENABLED", False))
+    )
+    ai_provider: str = field(
+        default_factory=lambda: (
+            _env_str("AI_PROVIDER") or ("gemini" if _env_str("GEMINI_API_KEY") else "deepseek")
+        ).lower()
+    )
+    ai_api_key: str = field(
+        default_factory=lambda: (
+            _env_str("AI_API_KEY")
+            or _env_str("GEMINI_API_KEY")
+            or _env_str("DEEPSEEK_API_KEY")
+            or _env_str("OPENAI_API_KEY")
+            or _env_str("GROQ_API_KEY")
+            or _env_str("ANTHROPIC_API_KEY")
+        )
+    )
+    ai_model: str = field(
+        default_factory=lambda: _env_str("AI_MODEL") or _env_str("GEMINI_MODEL")
+    )
+    ai_base_url: str = field(default_factory=lambda: _env_str("AI_BASE_URL"))
     ai_timeout_seconds: int = _int("AI_TIMEOUT_SECONDS", _int("GEMINI_TIMEOUT_SECONDS", 10))
     ai_max_output_tokens: int = _int("AI_MAX_OUTPUT_TOKENS", _int("GEMINI_MAX_OUTPUT_TOKENS", 400))
     ai_send_samples: bool = _bool("AI_SEND_SAMPLES", True)

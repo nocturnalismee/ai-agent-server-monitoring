@@ -309,3 +309,43 @@ def test_main_prints_config_normalization_warnings(monkeypatch, capsys):
 
     assert agent_module.main() == 0
     assert "HEALTH_INTERVAL=1" in capsys.readouterr().err
+
+
+def test_test_ai_disabled_returns_1(monkeypatch, capsys):
+    _patch_config(monkeypatch)
+    FakeAgent = _patch_agent(monkeypatch)
+
+    class FakeAgentWithAI(FakeAgent):
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            self.ai = SimpleNamespace(enabled=False, provider="deepseek")
+
+    monkeypatch.setattr(agent_module, "Agent", FakeAgentWithAI)
+    monkeypatch.setattr(sys, "argv", ["prog", "--test-ai"])
+
+    assert agent_module.main() == 1
+    assert "AI analysis is disabled or API key is missing" in capsys.readouterr().err
+
+
+def test_test_ai_success_returns_0(monkeypatch, capsys):
+    _patch_config(monkeypatch)
+    FakeAgent = _patch_agent(monkeypatch)
+
+    class FakeAgentWithAI(FakeAgent):
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            self.ai = SimpleNamespace(
+                enabled=True,
+                provider="deepseek",
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                analyze=lambda inc: "Likely cause:\nTest passed.",
+            )
+
+    monkeypatch.setattr(agent_module, "Agent", FakeAgentWithAI)
+    monkeypatch.setattr(sys, "argv", ["prog", "--test-ai"])
+
+    assert agent_module.main() == 0
+    out = capsys.readouterr().out
+    assert "AI Diagnosis received successfully" in out
+    assert "Test passed" in out

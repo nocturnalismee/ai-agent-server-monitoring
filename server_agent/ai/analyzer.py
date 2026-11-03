@@ -131,7 +131,10 @@ class AIAnalyzer:
         sys_instruction = self.system_instruction
 
         if self.provider == "gemini":
-            url = f"{self.base_url.rstrip('/')}/{self.model}:generateContent"
+            base = self.base_url.rstrip("/")
+            if not base.endswith("/models") and "/models" not in base:
+                base = f"{base}/models" if (base.endswith("/v1beta") or base.endswith("/v1")) else f"{base}/v1beta/models"
+            url = f"{base}/{self.model}:generateContent"
             body = {
                 "systemInstruction": {"parts": [{"text": sys_instruction}]},
                 "contents": [{"role": "user", "parts": [{"text": payload_json}]}],
@@ -152,7 +155,8 @@ class AIAnalyzer:
             )
 
         if self.provider in {"claude", "anthropic"}:
-            url = f"{self.base_url.rstrip('/')}/messages"
+            base = self.base_url.rstrip("/")
+            url = base if base.endswith("/messages") else f"{base}/messages"
             body = {
                 "model": self.model,
                 "system": sys_instruction,
@@ -173,7 +177,8 @@ class AIAnalyzer:
             )
 
         # Default: OpenAI-compatible (DeepSeek, OpenAI, Groq, Kimi, OpenRouter, Custom)
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        base = self.base_url.rstrip("/")
+        url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
         body = {
             "model": self.model,
             "messages": [

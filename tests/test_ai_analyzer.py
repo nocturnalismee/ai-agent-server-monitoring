@@ -256,6 +256,28 @@ def test_build_request_custom_base_url_strips_trailing_slash():
     assert body["model"] == "internal-model"
 
 
+def test_build_request_deduplicates_endpoint_suffix():
+    analyzer, _ = _make_analyzer(
+        _config(
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1/chat/completions",
+        )
+    )
+    req = analyzer._build_request({"metric": "cpu"})
+    assert req.full_url == "https://api.openai.com/v1/chat/completions"
+
+    claude_analyzer, _ = _make_analyzer(
+        _config(
+            provider="claude",
+            model="claude-3-5-haiku-20241022",
+            base_url="https://api.anthropic.com/v1/messages",
+        )
+    )
+    req_claude = claude_analyzer._build_request({"metric": "cpu"})
+    assert req_claude.full_url == "https://api.anthropic.com/v1/messages"
+
+
 @pytest.mark.parametrize(
     "provider,base_url,response,expected",
     [

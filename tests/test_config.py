@@ -66,3 +66,9 @@ def test_non_https_ai_base_url_is_rejected(url):
 )
 def test_https_or_loopback_ai_base_url_is_allowed(url):
     _valid_config(ai_base_url=url).validate()
+
+
+def test_ai_api_key_fallbacks_from_provider_env(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    cfg = Config()
+    assert cfg.ai_api_key == "sk-deepseek-test"

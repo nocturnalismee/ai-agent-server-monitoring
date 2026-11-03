@@ -697,6 +697,18 @@ def _print_service_plan(cfg) -> None:
     print(f"Service profile: {profile_name(cfg.service_profile, panel)} ({mode})")
     print("Required: " + (", ".join(required) if required else "(none)"))
     print("Optional: " + (", ".join(optional) if optional else "(none)"))
+    ai_status = "enabled" if getattr(cfg, "ai_enabled", False) else "disabled"
+    ai_provider = getattr(cfg, "ai_provider", "deepseek")
+    ai_model = (
+        cfg.resolved_ai_model()
+        if hasattr(cfg, "resolved_ai_model")
+        else getattr(cfg, "ai_model", "")
+    )
+    has_key = bool(getattr(cfg, "ai_api_key", ""))
+    print(
+        f"AI analysis: {ai_status} (provider: {ai_provider}, model: {ai_model or 'default'}, "
+        f"key: {'configured' if has_key else 'missing'})"
+    )
 
 
 def main():
@@ -704,6 +716,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="Run one monitoring cycle and exit")
     parser.add_argument("--test-notification", action="store_true", help="Send a test alert through the selected channel and exit")
     parser.add_argument("--test-email", action="store_true", help="Deprecated alias for --test-notification when email is selected")
+    parser.add_argument("--test-ai", action="store_true", help="Test AI provider configuration and connectivity, then exit")
     parser.add_argument("--check-config", action="store_true", help="Validate config and exit")
     parser.add_argument("--check-heartbeat", action="store_true", help="Run the heartbeat watchdog and exit")
     parser.add_argument("--status", action="store_true", help="Print the last cycle status and exit")
@@ -747,6 +760,37 @@ def main():
     if args.test_email and cfg.alert_channel != "email":
         print("Configuration/startup error: --test-email requires ALERT_CHANNEL=email", file=sys.stderr)
         return 2
+    if getattr(args, "test_ai", False):
+        ai = getattr(agent, "ai", None)
+        if ai is None or not getattr(ai, "enabled", False):
+            print("AI analysis is disabled or API key is missing.", file=sys.stderr)
+            print(f"  AI_ENABLED : {getattr(cfg, 'ai_enabled', False)}", file=sys.stderr)
+            print(f"  AI_PROVIDER: {getattr(cfg, 'ai_provider', 'deepseek')}", file=sys.stderr)
+            has_key = bool(getattr(cfg, "ai_api_key", ""))
+            print(f"  AI_API_KEY : {'configured' if has_key else 'MISSING'}", file=sys.stderr)
+            return 1
+        print("Testing AI incident analysis...")
+        print(f"  Provider: {ai.provider}")
+        print(f"  Model   : {ai.model}")
+        print(f"  Base URL: {ai.base_url}")
+        test_incident = Incident(
+            kind="test",
+            severity="WARNING",
+            title="Manual AI Connectivity Test",
+            summary="Verifying AI provider connectivity and response formatting",
+            fingerprint="test:ai",
+            details={"test": "manual", "status": "active"},
+        )
+        diagnosis = ai.analyze(test_incident)
+        if diagnosis:
+            print("\nAI Diagnosis received successfully:\n")
+            print(diagnosis)
+            return 0
+        print(
+            "\nAI analysis failed or returned empty. Check log file for details.",
+            file=sys.stderr,
+        )
+        return 1
     if args.test_notification or args.test_email:
         ok = agent.notifier.send_test()
         if agent.escalation_notifier is not None:
